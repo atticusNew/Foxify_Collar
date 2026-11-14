@@ -1,0 +1,423 @@
+name: Event shadow ledger backup
+
+# WHAT IT IS. An off-box copy of every file the event shadow keeps. The only
+# copy of the public track record, the lock ledgers and the trails beside them
+# is one Render disk on atticus-event-shadow. Every night this reads them
+# through the service's own operator export, byte for byte, and keeps them as a
+# workflow artifact for 90 days.
+#
+# WHO CAN READ THE COPY. An artifact can be downloaded by everyone who can read
+# the repository. On a private repository that is the people given access. On a
+# PUBLIC repository it is anyone signed in to GitHub, and the run's log and
+# summary can be read by anyone at all. The ledgers carry holder aliases,
+# positions and real fills. So the first step asks GitHub whether this
+# repository is private, and:
+#   private, no passphrase   the copy is uploaded as it is (as before).
+#   passphrase set           the copy is encrypted (gpg, AES-256) before it is
+#                            uploaded, on a private or a public repository.
+#   public, no passphrase    the run stops before anything is fetched.
+#   GitHub does not say      treated as public.
+# On a public repository the run's log and summary carry no file name, size or
+# checksum: those are in SUMMARY.md inside the encrypted copy.
+#
+# WHAT IT COPIES. Every file on the service's own list
+# (GET /api/shadow/export/files; each one is GET /api/shadow/export?file=<name>):
+# the record's ledger, the shared lock ledger and every holder's, the pending
+# trail of real-money lock attempts, the hedge receipts, the parlay ledger, the
+# daily check against the venues' fills, the terms acceptances, the scan refusal
+# counts, the daily fingerprints of each ledger, and everything a reset archived.
+# The list is worked out from the disk, so a file added beside a ledger later is
+# copied without this workflow changing. The list itself is kept as
+# manifest.json: it says where on the disk each file goes back.
+#
+# WHAT IT DOES NOT COPY. The members' sealed venue connections: they are
+# credentials, they stay on the disk only, and a member whose connection is lost
+# connects again. The run's summary names anything else on the disk that was
+# not copied.
+#
+# AN OLDER SERVICE. A service deployed before the list existed answers 404 for
+# it. The run then copies what that service can export (the record's ledger and
+# the lock ledgers), says so in a warning, and still succeeds.
+#
+# WHAT IT NEEDS.
+#   secret   EVENT_X_ADMIN_TOKEN  the same value as EVENT_X_ADMIN_TOKEN on
+#                                 atticus-event-shadow in Render. It is sent as
+#                                 the x-admin-token header, never in a URL.
+#   variable EVENT_SHADOW_URL     optional. The service's base URL; defaults to
+#                                 https://atticus-event-shadow.onrender.com.
+#   secret   EVENT_BACKUP_PASSPHRASE  optional on a private repository, required
+#                                 on a public one. 24 characters or more. GitHub
+#                                 never shows a secret again, so keep it somewhere
+#                                 else as well: without it an encrypted copy
+#                                 cannot be opened by anyone.
+#
+# RESTORING is a manual operator step. Download the artifact from the run. An
+# encrypted copy is one file; HOW-TO-OPEN.txt beside it gives the one command
+# that opens it. Check each file with `sha256sum -c <file>.sha256`, and put it
+# back on the service's disk by hand, at the path manifest.json gives for it
+# (the copy keeps each file's own name). Nothing here writes to the service.
+#
+# THE NIGHTLY RUN NEEDS THE DEFAULT BRANCH. GitHub runs `schedule` triggers only
+# from the repository's default branch, so this file has to be on it. The manual
+# run (Actions > Event shadow ledger backup > Run workflow) works from any branch.
+
+on:
+  schedule:
+    # 10:23 UTC, every day: the small hours across the US, after the late games
+    # have ended, and off the top of the hour when GitHub's queue is longest.
+    - cron: "23 10 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: event-ledger-backup
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  backup:
+    name: Copy every kept file off the disk
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      EVENT_SHADOW_URL: ${{ vars.EVENT_SHADOW_URL || 'https://atticus-event-shadow.onrender.com' }}
+
+    steps:
+      # No shell tracing anywhere in this job: `set -x` would print the token.
+      - name: Decide who could read the copy
+        id: reader
+        env:
+          REPO_READ_TOKEN: ${{ github.token }}
+          EVENT_BACKUP_PASSPHRASE: ${{ secrets.EVENT_BACKUP_PASSPHRASE }}
+        run: |
+          set -euo pipefail
+
+          # Ask GitHub; never assume. Only a clear "private: true" counts as private.
+          umask 077
+          auth_file="$RUNNER_TEMP/github-header"
+          trap 'rm -f "$auth_file"' EXIT
+          printf 'authorization: Bearer %s\n' "${REPO_READ_TOKEN:-}" > "$auth_file"
+          answer="$(curl --silent --retry 3 --retry-delay 5 --connect-timeout 20 --max-time 60 \
+            --header @"$auth_file" --header 'accept: application/vnd.github+json' \
+            "${GITHUB_API_URL:-https://api.github.com}/repos/${GITHUB_REPOSITORY:-}" \
+            | jq -r 'if type == "object" and (.private | type) == "boolean" then (.private | tostring) else "unknown" end' 2>/dev/null)" || answer="unknown"
+          case "${answer:-unknown}" in
+            true) public=0; said="This repository is private." ;;
+            false) public=1; said="This repository is public." ;;
+            *) public=1; said="GitHub did not say whether this repository is private, so it is treated as public." ;;
+          esac
+
+          passphrase="${EVENT_BACKUP_PASSPHRASE:-}"
+          if [ -n "$passphrase" ] && [ "${#passphrase}" -lt 24 ]; then
+            echo "::error title=Nothing was copied::The repository secret EVENT_BACKUP_PASSPHRASE is shorter than 24 characters. Anyone who can download the copy can try passphrases against it for as long as they like, so a short one does not protect it. Set a longer one. Nothing was fetched from the service."
+            exit 1
+          fi
+          if [ "$public" = "1" ] && [ -z "$passphrase" ]; then
+            echo "::error title=Nothing was copied::${said} An artifact on a public repository can be downloaded by anyone signed in to GitHub, and the ledgers carry holder aliases, positions and real fills. Either make the repository private (Settings > General > Danger Zone > Change repository visibility), or add the repository secret EVENT_BACKUP_PASSPHRASE (24 characters or more; keep a copy of it elsewhere) so the copy is encrypted before it is uploaded. Nothing was fetched from the service."
+            exit 1
+          fi
+
+          if [ -n "$passphrase" ]; then encrypt=1; else encrypt=0; fi
+          echo "public=${public}" >> "$GITHUB_OUTPUT"
+          echo "encrypt=${encrypt}" >> "$GITHUB_OUTPUT"
+          if [ "$encrypt" = "1" ]; then echo "${said} The copy will be encrypted before it is uploaded."; else echo "${said} The copy will be uploaded as it is."; fi
+
+      - name: Fetch the files
+        id: fetch
+        env:
+          EVENT_X_ADMIN_TOKEN: ${{ secrets.EVENT_X_ADMIN_TOKEN }}
+          BACKUP_PUBLIC: ${{ steps.reader.outputs.public }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${EVENT_X_ADMIN_TOKEN:-}" ]; then
+            echo "::error title=Missing secret::The repository secret EVENT_X_ADMIN_TOKEN is not set. Add it under Settings > Secrets and variables > Actions, with the same value as EVENT_X_ADMIN_TOKEN on atticus-event-shadow in Render."
+            exit 1
+          fi
+
+          base="${EVENT_SHADOW_URL%/}"
+          # https, or this machine itself (a rehearsal against a service run locally): never the clear over a network.
+          case "$base" in
+            https://*) ;;
+            http://127.0.0.1:*|http://localhost:*) ;;
+            *)
+              echo "::error::EVENT_SHADOW_URL must start with https:// so the token is never sent in the clear."
+              exit 1
+              ;;
+          esac
+
+          # curl reads the header from a file, so the token is in no URL and on no command line.
+          umask 077
+          header_file="$RUNNER_TEMP/admin-header"
+          trap 'rm -f "$header_file"' EXIT
+          printf 'x-admin-token: %s\n' "$EVENT_X_ADMIN_TOKEN" > "$header_file"
+
+          # fetch <path and query> <output file>
+          # Redirects are not followed: curl would carry the header to wherever one pointed.
+          # --retry covers a timeout and a 502, 503 or 504 while the service restarts; a 403 is final.
+          fetch() {
+            local status rc=0
+            status="$(curl --fail --silent --show-error \
+              --retry 4 --retry-delay 20 --connect-timeout 20 --max-time 300 \
+              --header @"$header_file" --output "$2" --write-out '%{http_code}' \
+              "${base}$1")" || rc=$?
+            if [ "$rc" -ne 0 ]; then
+              if [ "$status" = "403" ]; then
+                echo "::error::${1%%\?*} answered 403. The EVENT_X_ADMIN_TOKEN secret does not match the service's, or the service has no admin token set."
+              else
+                echo "::error::${1%%\?*} failed: curl exit ${rc}, HTTP ${status:-none}."
+              fi
+              return 1
+            fi
+          }
+
+          mkdir -p backup
+
+          # The service's own list of what it keeps. 404 means a service deployed before the list existed.
+          list_status="$(curl --silent --show-error --retry 4 --retry-delay 20 --connect-timeout 20 --max-time 120 \
+            --header @"$header_file" --output "$RUNNER_TEMP/files.json" --write-out '%{http_code}' \
+            "${base}/api/shadow/export/files")" || list_status="none"
+
+          if [ "$list_status" = "200" ]; then
+            if ! jq -e '.ok == true and (.files | type == "array")' "$RUNNER_TEMP/files.json" > /dev/null; then
+              echo "::error::/api/shadow/export/files did not answer with a list of files."
+              exit 1
+            fi
+            cp "$RUNNER_TEMP/files.json" backup/manifest.json
+            count="$(jq '.files | length' backup/manifest.json)"
+            if [ "$count" -eq 0 ]; then
+              echo "::error::The service listed no files. Check the disk and EVENT_SHADOW_LEDGER_PATH before trusting any backup."
+              exit 1
+            fi
+            i=0
+            while [ "$i" -lt "$count" ]; do
+              name="$(jq -r ".files[$i].name" backup/manifest.json)"
+              listed="$(jq -r ".files[$i].bytes" backup/manifest.json)"
+              i=$((i + 1))
+              # The name becomes part of a URL and a file name here: only a plain name is used.
+              if ! [[ "$name" =~ ^[A-Za-z0-9][A-Za-z0-9._~-]{0,150}$ ]] || [ "$name" = "manifest.json" ]; then
+                echo "::error::The service listed a file whose name is not a plain file name; refusing to build a URL from it."
+                exit 1
+              fi
+              fetch "/api/shadow/export?file=${name}" "backup/${name}"
+              copied="$(stat -c %s "backup/${name}")"
+              # A file only grows between the list and the copy, except one a reset moved lines out of.
+              if [ "$listed" -gt 0 ] && [ "$copied" -eq 0 ]; then
+                # a holder's ledger is named for the holder: on a public repository the log names no file
+                if [ "${BACKUP_PUBLIC:-1}" = "0" ]; then shown="$name"; else shown="File ${i} of ${count}"; fi
+                echo "::error::${shown} was listed at ${listed} bytes and came back empty."
+                exit 1
+              fi
+            done
+            echo "mode=every file the service keeps" >> "$GITHUB_OUTPUT"
+          elif [ "$list_status" = "404" ]; then
+            echo "::warning title=Only the ledgers were copied::This service does not list its files yet (deploy the latest commit to atticus-event-shadow). The record's ledger and the lock ledgers were copied; the hedge receipts, the pending trail, the parlay ledger, the terms acceptances, the fingerprints and the archives were not."
+            fetch "/api/shadow/export" "backup/event-shadow-ledger.jsonl"
+            # A lock ledger may be empty: no lock has been taken with that key yet.
+            fetch "/api/shadow/export?ledger=lock" "backup/event-shadow-lock-ledger.jsonl"
+            fetch "/api/shadow/holders" "$RUNNER_TEMP/holders.json"
+            holders="$(jq -r '.holders[].holder | select(. != "(shared)")' "$RUNNER_TEMP/holders.json")"
+            for holder in $holders; do
+              if ! [[ "$holder" =~ ^[a-z0-9][a-z0-9_-]{1,23}$ ]]; then
+                echo "::error::/api/shadow/holders listed a holder that is not an alias; refusing to build a URL from it."
+                exit 1
+              fi
+              fetch "/api/shadow/export?ledger=lock&holder=${holder}" "backup/event-shadow-lock-ledger-${holder}.jsonl"
+            done
+            echo "mode=the ledgers only (older service)" >> "$GITHUB_OUTPUT"
+          elif [ "$list_status" = "403" ]; then
+            echo "::error::/api/shadow/export/files answered 403. The EVENT_X_ADMIN_TOKEN secret does not match the service's, or the service has no admin token set."
+            exit 1
+          else
+            echo "::error::/api/shadow/export/files failed: HTTP ${list_status}."
+            exit 1
+          fi
+
+          # The record's ledger, under whichever name it was copied: an empty one is a missing file on the disk.
+          record="$(if [ -f backup/manifest.json ]; then jq -r '[.files[] | select(.key == "record" and .base == true)][0].name // empty' backup/manifest.json; else echo event-shadow-ledger.jsonl; fi)"
+          if [ -z "$record" ] || [ ! -s "backup/${record}" ]; then
+            echo "::error::The record's ledger is missing or came back empty. Check the disk and EVENT_SHADOW_LEDGER_PATH before trusting any backup."
+            exit 1
+          fi
+
+          echo "date=$(date -u +%F)" >> "$GITHUB_OUTPUT"
+
+      - name: Check the copy and write the summary
+        id: check
+        env:
+          BACKUP_MODE: ${{ steps.fetch.outputs.mode }}
+          BACKUP_PUBLIC: ${{ steps.reader.outputs.public }}
+        run: |
+          set -euo pipefail
+          cd backup
+
+          # The full summary is written to a file that travels inside the copy. It is shown on the
+          # run's page only when the repository is private: on a public one that page is public.
+          full="$RUNNER_TEMP/backup-summary.md"
+          {
+            echo "### Event shadow ledger backup, $(date -u '+%F %H:%M') UTC"
+            echo
+            echo "Source: ${EVENT_SHADOW_URL%/}"
+            echo
+            echo "Copied: ${BACKUP_MODE}."
+            echo
+            echo "| File | What it is | Bytes | Records | Unreadable | sha256 |"
+            echo "| --- | --- | ---: | ---: | ---: | --- |"
+          } > "$full"
+
+          bad_total=0
+          files_total=0
+          bytes_total=0
+          for file in *; do
+            case "$file" in manifest.json|*.sha256) continue ;; esac
+            bytes="$(stat -c %s "$file")"
+            role="$(if [ -f manifest.json ]; then jq -r --arg n "$file" '[.files[] | select(.name == $n)][0].role // ""' manifest.json; fi)"
+            case "$file" in
+              *.jsonl)
+                # A record is one non-blank line; every record must be a JSON object.
+                records="$(grep -c '[^[:space:]]' "$file" || true)"
+                bad="$(jq -R -n '[inputs | select(test("\\S")) | (try (fromjson | if type == "object" then 0 else 1 end) catch 1)] | add // 0' "$file")"
+                ;;
+              *.json)
+                # One JSON document; an empty file is not one.
+                records="1"
+                if jq -e . "$file" > /dev/null 2>&1; then bad=0; else bad=1; fi
+                ;;
+              *)
+                records="n/a"
+                bad=0
+                ;;
+            esac
+            sha256sum "$file" > "$file.sha256"
+            sum="$(cut -d ' ' -f 1 "$file.sha256")"
+            echo "| ${file} | ${role} | ${bytes} | ${records} | ${bad} | \`${sum}\` |" >> "$full"
+            if [ "${BACKUP_PUBLIC:-1}" = "0" ]; then echo "${file}: ${bytes} bytes, ${records} records, ${bad} unreadable, sha256 ${sum}"; fi
+            bad_total=$((bad_total + bad))
+            files_total=$((files_total + 1))
+            bytes_total=$((bytes_total + bytes))
+          done
+
+          if [ -f manifest.json ]; then
+            sha256sum manifest.json > manifest.json.sha256
+            {
+              echo
+              echo "Not on the disk yet (nothing of that kind has been written):"
+              jq -r 'if (.missing | length) == 0 then "- none" else .missing[] | "- \(.role)" end' manifest.json
+              echo
+              echo "On the disk and not copied:"
+              jq -r 'if ((.notCopied | length) + (.others | length)) == 0 then "- none" else ((.notCopied[] | "- \(.name): \(.why)"), (.others[] | "- \(.name): not one of the files the service writes")) end' manifest.json
+            } >> "$full"
+          fi
+
+          {
+            echo
+            echo "Check a downloaded file with \`sha256sum -c <file>.sha256\`."
+            if [ -f manifest.json ]; then echo "manifest.json says where on the disk each file goes back."; fi
+          } >> "$full"
+          cp "$full" SUMMARY.md
+
+          if [ "${BACKUP_PUBLIC:-1}" = "0" ]; then
+            cat "$full" >> "$GITHUB_STEP_SUMMARY"
+          else
+            {
+              echo "### Event shadow ledger backup, $(date -u '+%F %H:%M') UTC"
+              echo
+              echo "Copied: ${BACKUP_MODE}."
+              echo
+              echo "Files: ${files_total}. Bytes: ${bytes_total}. Lines that did not parse: ${bad_total}."
+              echo
+              echo "This repository is not private, so this page names no file and shows no checksum. They are in SUMMARY.md inside the encrypted copy."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "${files_total} files, ${bytes_total} bytes, ${bad_total} unreadable lines."
+          fi
+          echo "bad=${bad_total}" >> "$GITHUB_OUTPUT"
+
+      - name: Seal the copy
+        env:
+          EVENT_BACKUP_PASSPHRASE: ${{ secrets.EVENT_BACKUP_PASSPHRASE }}
+          BACKUP_PUBLIC: ${{ steps.reader.outputs.public }}
+          BACKUP_ENCRYPT: ${{ steps.reader.outputs.encrypt }}
+          BACKUP_DATE: ${{ steps.fetch.outputs.date }}
+        run: |
+          set -euo pipefail
+
+          if [ "${BACKUP_ENCRYPT:-}" != "1" ]; then
+            # the first step already refused this; checked again here, where the upload is decided
+            if [ "${BACKUP_PUBLIC:-1}" != "0" ]; then
+              echo "::error title=Nothing was uploaded::The copy is not encrypted and this repository is not known to be private."
+              exit 1
+            fi
+            mv backup upload
+            exit 0
+          fi
+
+          if ! [[ "${BACKUP_DATE:-}" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then
+            echo "::error::The fetch step gave no date for the copy."
+            exit 1
+          fi
+
+          umask 077
+          pass_file="$RUNNER_TEMP/backup-passphrase"
+          plain="$RUNNER_TEMP/copy.tar"
+          again="$RUNNER_TEMP/copy.read-back.tar"
+          home="$RUNNER_TEMP/gnupg"
+          trap 'gpgconf --homedir "$home" --kill gpg-agent > /dev/null 2>&1 || true; rm -rf "$pass_file" "$plain" "$again" "$home"' EXIT
+          printf '%s' "$EVENT_BACKUP_PASSPHRASE" > "$pass_file"
+          mkdir -p "$home" upload
+          chmod 700 "$home"
+
+          sealed="event-shadow-backup-${BACKUP_DATE}.tar.gpg"
+          tar -C backup -cf "$plain" .
+          # the passphrase is read from a file, so it is on no command line
+          gpg --batch --yes --quiet --no-tty --homedir "$home" --pinentry-mode loopback --no-symkey-cache \
+            --passphrase-file "$pass_file" --symmetric --cipher-algo AES256 \
+            --s2k-mode 3 --s2k-digest-algo SHA512 --s2k-count 65011712 \
+            --output "upload/${sealed}" "$plain"
+          # Read it back with the same passphrase before the plain copy goes: a copy nobody can open is no copy.
+          gpg --batch --yes --quiet --no-tty --homedir "$home" --pinentry-mode loopback --no-symkey-cache \
+            --passphrase-file "$pass_file" --decrypt --output "$again" "upload/${sealed}"
+          if ! cmp -s "$plain" "$again"; then
+            echo "::error::The encrypted copy did not read back the same. Nothing was uploaded."
+            exit 1
+          fi
+          rm -rf backup
+
+          (cd upload && sha256sum "$sealed" > "$sealed.sha256")
+          {
+            echo "This is an encrypted copy of every file the event record service keeps."
+            echo
+            echo "To open it you need the passphrase that was the repository secret"
+            echo "EVENT_BACKUP_PASSPHRASE on the night it was made. GitHub never shows a"
+            echo "secret again; without the passphrase nobody can open this file."
+            echo
+            echo "1. Check the download (on a Mac use: shasum -a 256 -c):"
+            echo "     sha256sum -c ${sealed}.sha256"
+            echo "2. Open it (gpg asks for the passphrase):"
+            echo "     gpg --decrypt ${sealed} | tar -x"
+            echo
+            echo "Inside: each file under the name it has on the disk, a .sha256 beside each,"
+            echo "manifest.json (where on the disk each file goes back) and SUMMARY.md."
+          } > upload/HOW-TO-OPEN.txt
+          echo "Encrypted: $(stat -c %s "upload/${sealed}") bytes. Read back and compared before the plain copy was removed."
+          echo "Encrypted before upload (gpg, AES-256); read back and compared. HOW-TO-OPEN.txt is beside it." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the copy
+        uses: actions/upload-artifact@v4
+        with:
+          name: event-shadow-ledger-${{ steps.fetch.outputs.date }}
+          path: upload/
+          retention-days: 90
+          if-no-files-found: error
+
+      # The copy above is kept either way: it is the disk's bytes, and a line that
+      # does not parse is something the operator needs to see, not lose.
+      - name: Fail if a line did not parse
+        if: steps.check.outputs.bad != '0'
+        run: |
+          echo "::error::${{ steps.check.outputs.bad }} line(s) in the copy are not JSON objects. The artifact was still uploaded; compare it with the ledger on the disk."
+          exit 1

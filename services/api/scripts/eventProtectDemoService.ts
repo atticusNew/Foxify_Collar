@@ -14,6 +14,11 @@
  * ISOLATION: imports only from src/eventCollar/**. Nothing here touches the
  * production Earn & Protect service, stores, or deploy.
  *
+ * RETAIL FIRST: GET /api/showcase serves the holder's shape only
+ * (src/eventCollar/retailShowcase.ts): market, position, floor/cap/credit and a
+ * retail refusal sentence. Legs, instruments, venue fees and our take never
+ * leave the process (the full quote is written to the ledger for the operator).
+ *
  * Run: npx tsx services/api/scripts/eventProtectDemoService.ts
  * Env: EVENT_DEMO_PORT (default 8791) · KALSHI_SERIES (default KXBTCD)
  *      EVENT_TAKE_BPS · EVENT_FEE_CENTS_PER_SPREAD · EVENT_DEMO_LEDGER_PATH
@@ -30,6 +35,7 @@ import {
   getOptionBook,
   nearestExpiryAtOrAfter,
 } from "../src/eventCollar/okxOptionsPublic";
+import { refuseBadAddress, requestUrl } from "../src/eventCollar/requestUrl";
 import { quoteWrap } from "../src/eventCollar/eventCollarPricer";
 import {
   buildShowcasePosition,
@@ -37,6 +43,7 @@ import {
   type ShowcaseSelection,
 } from "../src/eventCollar/showcasePicker";
 import { appendLedger } from "../src/eventCollar/quoteLedger";
+import { retailBtcPayload } from "../src/eventCollar/retailShowcase";
 import { DEFAULT_SEARCH_CONFIG, type WrapQuoteResult, type WrapSearchConfig } from "../src/eventCollar/types";
 import { renderEventAppHtml } from "./eventProtectAppHtml";
 
@@ -251,6 +258,18 @@ async function buildShowcasePayload(): Promise<ShowcasePayload> {
 
 let refreshing: Promise<void> | null = null;
 
+// Deploy warm-gate: report unhealthy until the prewarm scan lands so the host
+// keeps routing traffic to the old instance during a swap. The grace cap keeps
+// a venue outage from ever blocking a deploy (after it, we boot cold exactly as
+// before). Once warm, health never flips red again; SWR absorbs later failures.
+const BOOT_AT = Date.now();
+const WARM_GRACE_MS = 60_000;
+
+function healthReady(): { ready: boolean; warm: boolean } {
+  const warm = cache !== null;
+  return { ready: warm || Date.now() - BOOT_AT >= WARM_GRACE_MS, warm };
+}
+
 function refreshInBackground(): void {
   if (refreshing) return;
   refreshing = buildShowcasePayload()
@@ -291,15 +310,20 @@ function sendJson(res: ServerResponse, status: number, body: unknown): void {
 }
 
 const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
-  const url = new URL(req.url || "/", `http://localhost:${PORT}`);
+  // an address that is not a path is refused here; read loosely it threw, and that ended the process
+  const url = requestUrl(req.url, PORT);
+  if (!url) return refuseBadAddress(res);
   try {
     if (url.pathname === "/healthz") {
-      sendJson(res, 200, { ok: true, service: "event-protect-demo" });
+      const h = healthReady();
+      sendJson(res, h.ready ? 200 : 503, { ok: h.ready, warm: h.warm, service: "event-protect-demo" });
       return;
     }
     if (url.pathname === "/api/showcase") {
       const payload = await getShowcaseCached();
-      sendJson(res, 200, payload);
+      // Retail first: the legs, the venue, our take and the raw refusal stay off the wire; the
+      // card gets the market, the position, floor/cap/credit and a retail sentence.
+      sendJson(res, 200, retailBtcPayload(payload));
       return;
     }
     if (url.pathname === "/" || url.pathname === "/index.html") {

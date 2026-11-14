@@ -1,0 +1,213 @@
+{
+ "at": "2026-10-12T22:28:22.405Z",
+ "shadow": {
+  "openCount": 52,
+  "settledCount": 739,
+  "voidCount": 2,
+  "floorSaves": 314,
+  "capGiveups": 425,
+  "protectedTotalCents": 6107658,
+  "nakedTotalCents": 6375000,
+  "deltaTotalCents": -267342,
+  "realizedDeltaBpsOfStake": -241,
+  "quotedAvgEvBps": 267,
+  "routeSplit": {
+   "polymarket": 377,
+   "kalshi_self": 444
+  },
+  "firstOpenedAt": "2026-09-12T17:07:57.832Z",
+  "lastSettledAt": "2026-10-12T04:02:41.656Z",
+  "writer": {
+   "settledPnlCents": 28797,
+   "settledPnlBpsOfStake": 26,
+   "pnlWhenHolderWonCents": 16251,
+   "pnlWhenHolderLostCents": 12546,
+   "settledWhenHolderWon": 425,
+   "settledWhenHolderLost": 314,
+   "capSlicesKeptCents": 2110500,
+   "floorsPaidCents": 1603650,
+   "creditsPaidCents": 239508,
+   "hedgeCostCents": 3966795,
+   "hedgePayoutsCents": 3728250,
+   "takeBookedCents": 28797,
+   "takeLockedOpenCents": 2761,
+   "byLeague": {
+    "mlb": {
+     "settled": 220,
+     "open": 9,
+     "pnlCents": 9410,
+     "stakeCents": 3300000
+    },
+    "crypto": {
+     "settled": 389,
+     "open": 5,
+     "pnlCents": 12200,
+     "stakeCents": 5835000
+    },
+    "nfl": {
+     "settled": 88,
+     "open": 25,
+     "pnlCents": 4412,
+     "stakeCents": 1320000
+    },
+    "nba": {
+     "settled": 42,
+     "open": 13,
+     "pnlCents": 2775,
+     "stakeCents": 630000
+    }
+   }
+  },
+  "identity": {
+   "settled": 739,
+   "writerPnlCents": 28797,
+   "takeBookedCents": 28797,
+   "gapCents": 0,
+   "gapBpsOfStake": 0,
+   "hedgeNetCents": -238545,
+   "holderLegsNetCents": 267342,
+   "holds": true
+  },
+  "segments": {
+   "byRoute": {
+    "polymarket": {
+     "opened": 377,
+     "settled": 312,
+     "stakeSettledCents": 4680000,
+     "quotedAvgEvBps": 196,
+     "holderDeltaCents": -25402,
+     "holderDeltaBpsOfStake": -54,
+     "creditsCents": 141698,
+     "takeCents": 15764,
+     "writerPnlCents": 15764
+    },
+    "kalshi_self": {
+     "opened": 444,
+     "settled": 427,
+     "stakeSettledCents": 6405000,
+     "quotedAvgEvBps": 327,
+     "holderDeltaCents": -241940,
+     "holderDeltaBpsOfStake": -378,
+     "creditsCents": 97810,
+     "takeCents": 13033,
+     "writerPnlCents": 13033
+    }
+   },
+   "byLeague": {
+    "mlb": {
+     "opened": 236,
+     "settled": 220,
+     "stakeSettledCents": 3300000,
+     "quotedAvgEvBps": 280,
+     "holderDeltaCents": -65669,
+     "holderDeltaBpsOfStake": -199,
+     "creditsCents": 85681,
+     "takeCents": 9410,
+     "writerPnlCents": 9410
+    },
+    "crypto": {
+     "opened": 404,
+     "settled": 389,
+     "stakeSettledCents": 5835000,
+     "quotedAvgEvBps": 304,
+     "holderDeltaCents": -201253,
+     "holderDeltaBpsOfStake": -345,
+     "creditsCents": 90647,
+     "takeCents": 12200,
+     "writerPnlCents": 12200
+    },
+    "nfl": {
+     "opened": 118,
+     "settled": 88,
+     "stakeSettledCents": 1320000,
+     "quotedAvgEvBps": 232,
+     "holderDeltaCents": -15832,
+     "holderDeltaBpsOfStake": -120,
+     "creditsCents": 38018,
+     "takeCents": 4412,
+     "writerPnlCents": 4412
+    },
+    "nba": {
+     "opened": 63,
+     "settled": 42,
+     "stakeSettledCents": 630000,
+     "quotedAvgEvBps": 50,
+     "holderDeltaCents": 15412,
+     "holderDeltaBpsOfStake": 245,
+     "creditsCents": 25162,
+     "takeCents": 2775,
+     "writerPnlCents": 2775
+    }
+   },
+   "byKind": {
+    "sports": {
+     "opened": 417,
+     "settled": 350,
+     "stakeSettledCents": 5250000,
+     "quotedAvgEvBps": 231,
+     "holderDeltaCents": -66089,
+     "holderDeltaBpsOfStake": -126,
+     "creditsCents": 148861,
+     "takeCents": 16597,
+     "writerPnlCents": 16597
+    },
+    "crypto": {
+     "opened": 404,
+     "settled": 389,
+     "stakeSettledCents": 5835000,
+     "quotedAvgEvBps": 304,
+     "holderDeltaCents": -201253,
+     "holderDeltaBpsOfStake": -345,
+     "creditsCents": 90647,
+     "takeCents": 12200,
+     "writerPnlCents": 12200
+    }
+   }
+  },
+  "closed": {
+   "count": 28,
+   "unpriced": 9,
+   "protectedAtCloseCents": 223117,
+   "nakedAtCloseCents": 235989,
+   "deltaCents": -12872,
+   "withMid": 28,
+   "protectedAtMidCents": 237412,
+   "unwindFrictionCents": 14295,
+   "feesCents": 6678,
+   "writerPnlCents": 1619,
+   "takeBookedCents": 1619,
+   "stakeCents": 420000,
+   "byKind": {
+    "sports": {
+     "closed": 18,
+     "unpriced": 9
+    },
+    "crypto": {
+     "closed": 10,
+     "unpriced": 0
+    }
+   }
+  },
+  "counterfactuals": {
+   "recordedSince": "2026-09-20T18:34:11.441Z",
+   "positionsWithCounterfactuals": 551
+  }
+ },
+ "flow": {
+  "windowDays": 30,
+  "last30Days": {
+   "positions": 794,
+   "contractsMilli": 91477500,
+   "hedgeNotionalCents": 4213946,
+   "stakeCents": 11910000,
+   "contracts": 91478
+  },
+  "allTime": {
+   "positions": 819,
+   "contractsMilli": 94738500,
+   "hedgeNotionalCents": 4364259,
+   "stakeCents": 12285000,
+   "contracts": 94738
+  }
+ }
+}

@@ -1,0 +1,223 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Exchange</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  *{box-sizing:border-box}
+  body{margin:0;background:#0b0b0d;color:#f2f3f5;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;font-size:13px}
+  a{color:inherit;text-decoration:none}
+  .top{position:sticky;top:0;z-index:5;background:#0b0b0d}
+  .ticker{display:flex;gap:26px;padding:7px 14px;background:#101013;border-bottom:1px solid #1f1f25;font-size:10.5px;color:#9a9ca3;overflow:hidden;white-space:nowrap}
+  .ticker b{color:#f2f3f5;margin:0 4px}.live{color:#ff5a5a;font-weight:700}.blue{color:#3b8bff}.green{color:#2fd27a}
+  header{display:flex;align-items:center;justify-content:space-between;padding:10px 24px;border-bottom:1px solid #1f1f25}
+  .logo{font-weight:900;letter-spacing:.08em;font-size:17px}
+  .tabs{display:flex;gap:30px;font-size:10.5px;color:#9a9ca3;text-align:center}
+  .tabs a{display:flex;flex-direction:column;align-items:center;gap:4px}.tabs .on{color:#fff}
+  .ico{width:18px;height:18px;border-radius:5px;background:#2a2a31;display:block}.on .ico{background:#fff}
+  .right{display:flex;gap:10px;align-items:center}
+  .mode{display:flex;background:#17171c;border:1px solid #26262d;border-radius:999px;padding:3px;font-size:11px;font-weight:700}
+  .mode span{padding:5px 12px;border-radius:999px;color:#9a9ca3;cursor:pointer}.mode .on{background:#2fd27a;color:#000}
+  .search{background:#17171c;border:1px solid #26262d;border-radius:999px;padding:8px 16px;color:#9a9ca3;font-size:12px;width:200px}
+  .dep{background:#2fd27a;color:#000;border-radius:999px;padding:8px 18px;font-weight:700;font-size:12px}
+  .wrap{display:grid;grid-template-columns:150px 1fr 250px;min-height:120vh}
+  aside{border-right:1px solid #1f1f25;padding:14px 8px;font-size:13px;color:#d6d7db}
+  aside a{display:flex;gap:10px;align-items:center;padding:8px 10px;border-radius:8px;margin-bottom:2px}aside .on{background:#17171c;color:#fff}
+  aside i{width:14px;height:14px;border-radius:50%;background:#3b8bff;display:inline-block}
+  aside .foot{margin-top:28px;font-size:11px;color:#6f7279;line-height:1.9}
+  main{padding:18px 22px 60px;border-right:1px solid #1f1f25}
+  h1{font-size:20px;margin:0 0 10px}
+  .subtabs{display:flex;gap:22px;font-size:14px;margin:0 0 16px}.subtabs .on{font-weight:700;border-bottom:2px solid #fff;padding-bottom:4px}
+  .game{margin-bottom:14px}
+  .when{font-size:11px;color:#9a9ca3;margin:0 0 6px}.when b{color:#3b8bff;font-weight:600}
+  .grid{display:grid;grid-template-columns:1fr 92px 92px 92px;gap:4px 6px;align-items:center}
+  .cols{display:grid;grid-template-columns:1fr 92px 92px 92px;gap:6px;font-size:10.5px;color:#9a9ca3;text-align:center;margin-bottom:4px}
+  .team{display:flex;align-items:center;gap:8px;padding:6px 0}
+  .logo-sq{width:22px;height:22px;border-radius:6px;background:#1c3a7a;flex:none}
+  .name{font:inherit;font-weight:600;font-size:13px;background:none;border:0;color:inherit;padding:0;cursor:pointer}.at{color:#9a9ca3;font-size:12px}.rec{color:#9a9ca3;font-size:11px}
+  .cell{background:#1c1c20;border-radius:7px;padding:6px 4px;text-align:center;cursor:pointer;border:1px solid transparent;line-height:1.2}
+  .cell:hover{border-color:#2fd27a}.cell.sel{border-color:#2fd27a;background:#123a26}
+  .cell small{display:block;color:#2fd27a;font-size:11px;font-weight:600}
+  .cell .o{color:#2fd27a;font-weight:700}
+  .traded{font-size:10.5px;color:#9a9ca3;text-align:right;margin-top:4px}
+  .matchup{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;justify-items:center;padding:14px 0 10px;margin-bottom:8px}
+  .jersey{width:40px;height:40px;border-radius:8px;background:#1c3a7a;margin-bottom:6px}
+  .matchup .code{font-weight:700;font-size:12px}
+  .center{font-size:11px;color:#9a9ca3;text-align:center}.center b{display:block;color:#fff;font-size:12px}.center .blue{display:block}
+  .chart{height:150px;border-bottom:1px solid #1f1f25;position:relative;margin-bottom:8px}
+  .chart svg{width:100%;height:100%}
+  .chart .lbl{position:absolute;right:0;font-size:11px;font-weight:700;color:#2fd27a}
+  .chart .lbl small{display:block;font-weight:400;color:#9a9ca3;font-size:10px}
+  .back{display:inline-flex;width:30px;height:30px;border-radius:50%;background:#1c1c20;align-items:center;justify-content:center;margin-bottom:8px;cursor:pointer}
+  .lines{margin-top:18px;font-size:14px;font-weight:700}.lines small{display:block;font-weight:400;color:#9a9ca3;font-size:11px;margin-top:4px}
+  .pills{display:flex;gap:8px;margin:10px 0 16px}.pills span{padding:6px 12px;border-radius:999px;background:#1c1c20;font-size:12px}.pills .on{background:#fff;color:#000;font-weight:700}
+  .right-col{padding:14px 12px;position:relative}
+  .slip{background:#121216;border:1px solid #1f1f25;border-radius:12px;padding:12px}
+  .slip-h{display:flex;align-items:center;gap:8px;font-weight:700;font-size:14px;margin-bottom:10px}
+  .slip-h .n{width:20px;height:20px;border-radius:50%;background:#2fd27a;color:#000;display:inline-flex;align-items:center;justify-content:center;font-size:11px}
+  .empty{text-align:center;padding:30px 0 24px;color:#9a9ca3;font-size:12px}
+  .empty .art{width:90px;height:90px;border-radius:50%;background:#1c1c20;margin:0 auto 14px}
+  .empty b{display:block;color:#fff;font-size:14px;margin-bottom:4px}
+  .pick-card{background:#1c1c20;border-radius:10px;padding:10px}
+  .pick{font-weight:700;font-size:13px}.pick-meta{font-size:11px;color:#9a9ca3;margin:3px 0 8px}
+  .odds{font-size:12px;color:#2fd27a;font-weight:700;text-align:right;margin-bottom:8px}
+  .otype{display:flex;justify-content:space-between;align-items:center;font-size:12px;margin:10px 0}.otype small{display:block;color:#9a9ca3;font-size:10.5px}
+  .otype .seg span{padding:4px 10px;border-radius:999px;background:#1c1c20;font-size:11px;margin-left:4px}.otype .seg .on{background:#fff;color:#000;font-weight:700}
+  .fields{display:flex;gap:8px}
+  .stake{flex:1;border:1px solid #2fd27a;border-radius:8px;padding:6px 10px;background:#0b0b0d}
+  .stake label{display:block;font-size:10px;color:#9a9ca3}
+  .stake input{background:transparent;border:0;color:#fff;font-size:14px;font-weight:700;width:100%;outline:0}
+  .stake b{display:block;color:#fff;font-size:14px;font-weight:700;line-height:20px}
+  .rm{float:right;color:#6f7279;cursor:pointer;font-size:12px}
+  .trend{margin-top:18px}
+  .trend h3{font-size:14px;margin:0 0 10px}
+  .place{position:fixed;right:12px;bottom:12px;width:226px;background:#2fd27a;color:#000;border:0;border-radius:10px;padding:10px 12px;font-weight:700;font-size:13px;text-align:center;cursor:pointer}
+  .place small{display:block;font-weight:500;font-size:11px;opacity:.8}
+  .hidden{display:none}
+  .ptabs{display:flex;gap:22px;font-size:13px;margin:0 0 18px;color:#9a9ca3;border-bottom:1px solid #1f1f25}.ptabs a{color:inherit;text-decoration:none;padding:0 2px 8px}.ptabs .on{color:#fff;font-weight:600;border-bottom:2px solid #0ba249;margin-bottom:-1px}
+  .filters{display:flex;gap:16px;margin:0 0 18px}.filters div small{display:block;font-size:11px;color:#9a9ca3;margin-bottom:4px}.filters div span{display:inline-block;min-width:120px;padding:7px 12px;border:1px solid #27272a;border-radius:8px;font-size:12.5px;color:#f2f3f5}
+  table.trades{width:100%;border-collapse:collapse;font-size:12.5px}table.trades th{font-weight:400;color:#c3c4c9;text-align:left;padding:8px 10px;border-bottom:1px solid #1f1f25}table.trades th:nth-child(5),table.trades th:nth-child(6),table.trades th:nth-child(7),table.trades td:nth-child(5),table.trades td:nth-child(6),table.trades td:nth-child(7){text-align:right}
+  table.trades td{padding:12px 10px;border-bottom:1px solid #1a1a1e;vertical-align:middle;color:#f2f3f5}table.trades td small{display:block;color:#9a9ca3;font-size:11px;margin-top:3px}table.trades td b{font-weight:500}table.trades td.pr{color:#c3c4c9}table.trades td.ic{width:22px;color:#6f7279;font-size:12px}table.trades td.act{color:#9a9ca3;text-align:center}
+  .mk{display:flex;gap:10px;align-items:center}.mk .pin{width:8px;height:8px;border-radius:50%;background:#2fd27a;flex:none}.type{border:1px solid #27272a;border-radius:999px;padding:3px 9px;font-size:11px;color:#c3c4c9;background:#161618}
+  .psum{display:flex;gap:24px;margin:0 0 18px;font-size:12px;color:#9a9ca3}.psum b{display:block;color:#fff;font-size:18px;font-weight:800}
+  .pos{display:flex;align-items:center;gap:14px;padding:12px 14px;border:1px solid #1f1f25;border-radius:12px;background:#121216;margin-top:10px}
+  .pos .logo-sq{width:34px;height:34px;border-radius:8px}
+  .pos .pname{font-weight:700;font-size:14px}.pos .pmeta{font-size:11.5px;color:#9a9ca3;margin-top:3px}
+  .pos .pmid{flex:1}
+  .pos .pnum{text-align:right;min-width:84px;font-size:11px;color:#9a9ca3}.pos .pnum b{display:block;color:#fff;font-size:14px;font-weight:700;margin-top:2px}
+  .pos .podds{color:#2fd27a;font-weight:700;font-size:13px;min-width:48px;text-align:right}
+  .tag{border-radius:999px;padding:5px 10px;font-size:11px;font-weight:700;white-space:nowrap}
+  .tag.ok{background:#123a26;color:#2fd27a}.tag.part{background:#3a3212;color:#f0c24a}.tag.wait{background:#1c1c20;color:#9a9ca3;border:1px solid #26262d}
+  .pempty{color:#9a9ca3;padding:30px 0;text-align:center}
+</style></head>
+<body>
+<div class="top">
+<div class="ticker"><span>Hockey <span class="live">Live</span> 3rd 00:38 <b>TOR</b>4 <b>UTA</b>5</span><span>Hockey <span class="live">Live</span> End 2nd <b>CGY</b>2 <b>ANA</b>2</span><span>Pro BB (M) <span class="live">Live</span> Q3 06:55 <b>POR</b>81 <b>SAC</b>50</span><span>Pro BB (M) <span class="live">Live</span> Q3 06:09 <b>GSW</b>63 <b>LAL</b>70</span><span>Hockey <span class="live">Live</span> 2nd 17:57 <b>EDM</b>3 <b>LAK</b>0</span><span>Pro BSB <span class="blue">Tomorrow 8:00 PM</span> <b>MIL</b> <span class="green">+156</span> <b>LAD</b> <span class="green">-164</span></span><span>CFB <span class="blue">Tomorrow 7:00 PM</span> <b>WKU</b> <span class="green">-112</span> <b>SHSU</b> <span class="green">+111</span></span></div>
+<header><div class="logo">EXCHANGE</div><div class="tabs"><a class="on" href="#/" id="nav-home"><span class="ico"></span>Home</a><a href="#/"><span class="ico"></span>Sports</a><a href="#/my-trades" id="nav-plays"><span class="ico"></span><span id="pf-nav">My Trades</span></a><a href="#"><span class="ico"></span>Promos</a></div><div class="right"><div class="mode" id="mode"><span class="on" data-mode="cash">Cash</span><span data-mode="points">Points</span></div><div class="search">Search Events, Teams &amp; Players</div><div class="dep">+ Deposit</div><div class="get" id="bal">$2.00 &#x25BE;</div></div></header>
+</div>
+<div class="wrap">
+<aside><a><i style="background:#8ab"></i>Hockey</a><a><i style="background:#cc3"></i>Tennis (M)</a><a class="on" href="#/"><i style="background:#e73"></i>Pro BB (M)</a><a><i style="background:#a63"></i>Pro FB</a><a><i style="background:#a4c"></i>Tennis (W)</a><a><i style="background:#e73"></i>Pro BB (W)</a><a><i style="background:#63c"></i>EPL</a><a><i style="background:#c33"></i>MMA</a><a><i style="background:#c33"></i>La Liga</a><a><i style="background:#3a6"></i>Serie A</a><a><i style="background:#36c"></i>Ligue 1</a><a><i style="background:#c33"></i>US Soccer</a>
+<div class="foot">Terms of Use<br>Privacy Policy<br>Responsible Gaming<br>Your Privacy Choices<br>Cookie Preferences<br>About<br>Careers<br>Newsroom<br>Help Center</div></aside>
+<main id="main"></main>
+<div class="right-col"><div id="slip"></div>
+<div class="trend" id="trend"><h3>Trending Futures</h3><div class="pills"><span class="on">Pro FB</span><span>Baseball</span><span>CFB</span></div>
+<div class="when">SB Winner <span style="float:right">Matched: $485,163</span></div>
+<div class="grid" style="grid-template-columns:1fr 60px 60px"><div class="team"><span class="logo-sq" style="background:#a22"></span><span class="name">SF</span></div><div class="cell"><small>Yes</small>+641</div><div class="cell"><small>No</small>-714</div>
+<div class="team"><span class="logo-sq"></span><span class="name">LAR</span></div><div class="cell"><small>Yes</small>+669</div><div class="cell"><small>No</small>-833</div>
+<div class="team"><span class="logo-sq" style="background:#136"></span><span class="name">BUF</span></div><div class="cell"><small>Yes</small>+733</div><div class="cell"><small>No</small>-833</div></div></div>
+</div>
+</div>
+<script>
+// A stand-in for the venue's React app: hash routes, a market-order slip with a Cost input and a To Gain
+// line, prices shown as the implied chance (75.9%), and a My Trades page where each trade carries its
+// matching state. Odds are kept American in the data and shown as percentages, as the venue does.
+const LEAGUE = "Pro BB (M)";
+const GAMES = [
+  { id: "BKNBOS", when: "Tue 7:30 PM", away: ["BKN", "Nets", "1-3"], home: ["BOS", "Celtics", "3-1"], spread: ["+11.5", "-108", "-11.5", "-104"], total: ["O 224.5", "-110", "U 224.5", "-104"], win: ["+372", "-385"], matched: "$118,440" },
+  { id: "DETNYK", when: "Tue 8:00 PM", away: ["DET", "Pistons", "2-2"], home: ["NYK", "Knicks", "3-1"], spread: ["+4.5", "-106", "-4.5", "-106"], total: ["O 228.5", "-108", "U 228.5", "-104"], win: ["+152", "-156"], matched: "$206,915" },
+  { id: "SACSAS", when: "Tue 8:00 PM", away: ["SAC", "Kings", "1-3"], home: ["SAS", "Spurs", "3-1"], spread: ["+5.5", "-104", "-5.5", "-108"], total: ["O 230.5", "-106", "U 230.5", "-106"], win: ["+170", "-176"], matched: "$84,120" },
+  { id: "PORLAL", when: "Tue 11:00 PM", away: ["POR", "Trail Blazers", "2-2"], home: ["LAL", "Lakers", "3-1"], spread: ["+2.5", "-104", "-2.5", "-108"], total: ["O 232.5", "-110", "U 232.5", "-102"], win: ["+118", "-124"], matched: "$130,002" },
+  { id: "WASCLE", when: "Wed 7:00 PM", away: ["WAS", "Wizards", "1-3"], home: ["CLE", "Cavaliers", "4-0"], spread: ["+10.5", "-106", "-10.5", "-106"], total: ["O 226.5", "-108", "U 226.5", "-104"], win: ["+310", "-320"], matched: "$52,660" },
+  { id: "NYKCHI", when: "Wed 8:00 PM", away: ["NYK", "Knicks", "3-1"], home: ["CHI", "Bulls", "1-3"], spread: ["-7.5", "-106", "+7.5", "-106"], total: ["O 229.5", "-108", "U 229.5", "-104"], win: ["-330", "+320"], matched: "$61,315" },
+];
+const slip = { sel: null, stake: "20" };
+let mode = sessionStorage.getItem("mock-mode") || "cash";
+// Open trades, as the venue's My Trades page lists them. Place Trade on the slip adds one (a market order, matched at once).
+// matched: the dollars of the stake another account has taken; 0 is a resting order.
+const PLAYS = JSON.parse(sessionStorage.getItem("mock-trades") || "null") || [
+  { g: "DETNYK", side: "home", kind: "Moneyline", line: "", odds: "-156", stake: 10, matched: 10, when: "Tue 8:00 PM", away: ["DET", "Pistons"], home: ["NYK", "Knicks"] },
+  { g: "BKNBOS", side: "away", kind: "Moneyline", line: "", odds: "+372", stake: 5, matched: 5, when: "Tue 7:30 PM", away: ["BKN", "Nets"], home: ["BOS", "Celtics"] },
+  { g: "DETNYK", side: "home", kind: "Spread", line: "-4.5", odds: "-106", stake: 10, matched: 10, when: "Tue 8:00 PM", away: ["DET", "Pistons"], home: ["NYK", "Knicks"] },
+  { g: "PORLAL", side: "home", kind: "Moneyline", line: "", odds: "-124", stake: 10, matched: 10, codeOnly: true, when: "Tue 11:00 PM", away: ["POR", "Trail Blazers"], home: ["LAL", "Lakers"] },
+  { g: "SACSAS", side: "away", kind: "Moneyline", line: "", odds: "+170", stake: 20, matched: 10, when: "Tue 8:00 PM", away: ["SAC", "Kings"], home: ["SAS", "Spurs"] },
+  { g: "WASCLE", side: "home", kind: "Moneyline", line: "", odds: "-320", stake: 10, matched: 0, when: "Wed 7:00 PM", away: ["WAS", "Wizards"], home: ["CLE", "Cavaliers"] },
+];
+const savePlays = () => sessionStorage.setItem("mock-trades", JSON.stringify(PLAYS));
+const $ = (s) => document.querySelector(s);
+const money = (n) => (mode === "points" ? Math.round(n * 100).toLocaleString("en-US") + " pts" : "$" + n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
+// payout per $1 at American odds
+const mult = (odds) => { const o = Number(odds); return o > 0 ? 1 + o / 100 : 1 + 100 / -o; };
+const toWin = (stake, odds) => stake * (mult(odds) - 1);
+const tag = (p) => (p.matched <= 0 ? '<span class="tag wait">Unmatched</span>' : p.matched < p.stake ? '<span class="tag part">Partially Matched</span>' : '<span class="tag ok">Matched</span>');
+const show = (odds) => (100 / mult(odds)).toFixed(1) + "%";
+const CITY = { BKN: "Brooklyn", BOS: "Boston", DET: "Detroit", NYK: "New York", SAC: "Sacramento", SAS: "San Antonio", POR: "Portland", LAL: "Los Angeles", WAS: "Washington", CLE: "Cleveland", CHI: "Chicago" };
+const full = (t) => CITY[t[0]] + " " + t[1];
+const refOf = (p, i) => "mo_" + (p.g + i).toLowerCase().slice(0, 2) + "\u2026" + (1000 + i * 731).toString(16).slice(-4);
+// one row of the venue's table: Market, Type, Event/Date, Cost, Price, Payout, Ref ID/Placed, Actions.
+// The figures sit under column headers with no label of their own; the filled tab shows the matched
+// part of a play as its cost, the resting tab what is still an order.
+const tradeRow = (p, i, cost) => {
+  const t = p.side === "away" ? p.away : p.home;
+  const market = (p.codeOnly ? t[0] : full(t)) + (p.line ? " " + p.line : "");
+  return "<tr><td><div class=\"mk\"><span class=\"pin\"></span><div><b>" + market + "</b><small>" + p.kind + "</small></div></div></td><td><span class=\"type\">Straight</span></td><td><b>" + full(p.away) + " at " + full(p.home) + " &#x2197;</b><small>Oct " + (p.when.startsWith("Thu") ? "16" : p.when.startsWith("Mon") ? "20" : "19") + ", 2026 &middot; " + p.when.split(" ").slice(1).join(" ") + "</small></td><td>" + money(cost) + "</td><td class=\"pr\">" + (100 / mult(p.odds)).toFixed(2) + "%</td><td>" + money(cost * mult(p.odds)) + "</td><td><b>Oct 14, 2026 &middot; 2:4" + (i % 10) + " PM</b><small>" + refOf(p, i) + " &#x2398;</small></td><td class=\"act\">&#x22EF;</td></tr>";
+};
+const TABS = ["resting", "filled", "settled"];
+const playsView = (tab) => {
+  const rows = tab === "resting" ? PLAYS.map((p, i) => (p.matched < p.stake ? tradeRow(p, i, p.stake - p.matched) : "")) : tab === "filled" ? PLAYS.map((p, i) => (p.matched > 0 ? tradeRow(p, i, p.matched) : "")) : [];
+  const body = rows.join("");
+  return '<h1>My Trades</h1><div class="ptabs">' + TABS.map((t) => '<a href="#/my-trades/' + t + '"' + (t === tab ? ' class="on"' : "") + ">" + t[0].toUpperCase() + t.slice(1) + "</a>").join("") + "</div>" +
+    '<div class="filters"><div><small>Trade Type</small><span>All &#x25BE;</span></div><div><small>Sort By</small><span>Placed (New to Old) &#x25BE;</span></div><div><small>Date Range</small><span>All &#x25BE;</span></div></div>' +
+    (body ? '<table class="trades"><thead><tr><th></th><th>Market</th><th>Type</th><th>Event/Date</th><th>Cost</th><th>Price</th><th>Payout</th><th>Ref ID/Placed</th><th>Actions</th></tr></thead><tbody>' + body.replace(/<tr><td>/g, '<tr><td class="ic">&#x1F517;</td><td>') + "</tbody></table>" : '<div class="pempty">No ' + tab + " trades</div>");
+};
+const cell = (g, side, kind, line, odds) => '<div class="cell" data-g="' + g.id + '" data-side="' + side + '" data-kind="' + kind + '" data-line="' + (line || "") + '" data-odds="' + odds + '"' + (slip.sel && slip.sel.g === g.id && slip.sel.side === side && slip.sel.kind === kind ? ' class="cell sel"' : "") + ">" + (line ? line + "<small>" + show(odds) + "</small>" : '<span class="o">' + show(odds) + "</span>") + "</div>";
+const teamRow = (g, side) => {
+  const t = side === "away" ? g.away : g.home;
+  return '<div class="team"><span class="logo-sq"' + (side === "home" ? ' style="background:#2a5a9a"' : "") + '></span><button type="button" class="name" data-go="#/game/' + g.id + '">' + t[0] + " " + t[1] + "</button>" + (side === "away" ? '<span class="at">at</span>' : "") + '<span class="rec">' + t[2] + "</span></div>";
+};
+const rows = (g) =>
+  '<div class="grid">' + teamRow(g, "away") + cell(g, "away", "Spread", g.spread[0], g.spread[1]) + cell(g, "away", "Total", g.total[0], g.total[1]) + cell(g, "away", "Moneyline", "", g.win[0]) +
+  teamRow(g, "home") + cell(g, "home", "Spread", g.spread[2], g.spread[3]) + cell(g, "home", "Total", g.total[2], g.total[3]) + cell(g, "home", "Moneyline", "", g.win[1]) + "</div>";
+const listView = () =>
+  '<h1>' + LEAGUE + '</h1><div class="subtabs"><span class="on">Games</span><span>Player Props</span><span>Futures</span></div>' +
+  GAMES.map((g) => '<div class="game"><div class="when">' + g.when.split(" ")[0] + " <b>" + g.when.split(" ").slice(1).join(" ") + '</b></div><div class="cols"><span></span><span>Spread</span><span>Total</span><span>Moneyline</span></div>' + rows(g) + '<div class="traded">' + LEAGUE + ' &nbsp; Matched: ' + g.matched + " &nbsp; 9 More &rsaquo;</div></div>").join("");
+const pct = (odds) => Math.round(100 / mult(odds));
+const gameView = (g) =>
+  '<a class="back" href="#/">&lsaquo;</a><div class="matchup"><div><div class="jersey"></div><div class="code">' + g.away[0] + '</div></div><div class="center"><b>' + g.when.split(" ").slice(1).join(" ") + "</b>" + g.when.split(" ")[0] + '<span class="blue" style="margin-top:14px;font-weight:900;letter-spacing:.1em;color:#6f7279">EXCHANGE</span></div><div><div class="jersey" style="background:#2a5a9a"></div><div class="code">' + g.home[0] + "</div></div></div>" +
+  '<div class="chart"><div class="lbl" style="top:8px">' + g.home[0] + "<small>" + pct(g.win[1]) + "%</small></div><div class=\"lbl\" style=\"bottom:28px\">" + g.away[0] + "<small>" + pct(g.win[0]) + '%</small></div><svg viewBox="0 0 600 150" preserveAspectRatio="none"><polyline fill="none" stroke="#2fd27a" stroke-width="2" points="0,40 180,40 180,36 420,36 600,34"/><polyline fill="none" stroke="#2fd27a" stroke-width="1" opacity=".6" points="0,110 180,110 180,114 420,114 600,116"/></svg></div>' +
+  '<div class="when">Matched: ' + g.matched + '</div><div class="cols"><span></span><span>Spread</span><span>Total</span><span>Moneyline</span></div>' + rows(g) +
+  '<div class="lines">Game Lines<small>Player Props</small></div><div class="pills"><span class="on">Main Markets</span><span>1st Half</span><span>Team Totals</span></div><div class="lines">Spread<small>What is the final margin?</small></div>';
+const slipView = () => {
+  if (!slip.sel) return '<div class="slip"><div class="empty"><div class="art"></div><b>No selections</b>Pick a price to build a market order</div></div>';
+  const s = slip.sel;
+  const g = GAMES.find((x) => x.id === s.g);
+  const t = s.side === "away" ? g.away : g.home;
+  const stake = Number(slip.stake) || 0;
+  const pickName = t[0] + " " + t[1] + (s.kind === "Spread" ? " " + s.line : "") + (s.kind === "Total" ? " " + s.line : "");
+  return '<div class="slip"><div class="slip-h">Market Order &#x25BE;</div>' +
+    '<div class="pick-card"><span class="rm" id="rm">&#x1F5D1;</span><div class="pick">' + pickName + " &middot; " + s.kind + '</div><div class="pick-meta">' + LEAGUE + ' &middot; ' + g.away[0] + " at " + g.home[0] + " &middot; " + g.when + '</div><div class="odds">' + show(s.odds) + '</div><div class="fields"><div class="stake"><label>Cost</label><input id="stake" type="text" inputmode="decimal" value="' + slip.stake + '"></div><div class="stake" style="border-color:#26262d"><label>To Gain</label><b id="towin">' + money(toWin(stake, s.odds)) + "</b></div></div></div></div>" +
+    '<button class="place">' + (stake > 0 ? "Place Trade" : "Enter a cost") + "<small>Net winnings per market are subject to a 2% fee</small></button>";
+};
+const render = () => {
+  const h = location.hash || "#/";
+  const m = /^#\/game\/(\w+)/.exec(h);
+  const g = m ? GAMES.find((x) => x.id === m[1]) : null;
+  const pm = /^#\/(?:my-trades|trades|plays|portfolio)(?:\/(resting|filled|settled))?/.exec(h);
+  const plays = !!pm;
+  $("#main").innerHTML = plays ? playsView(pm[1] || "filled") : g ? gameView(g) : listView();
+  $("#slip").innerHTML = slipView();
+  $("#trend").className = "trend" + (slip.sel ? " hidden" : "");
+  $("#nav-plays").className = plays ? "on" : "";
+  $("#nav-home").className = plays ? "" : "on";
+  for (const s of document.querySelectorAll("#mode span")) s.className = s.dataset.mode === mode ? "on" : "";
+  const place = $(".place");
+  if (place) place.onclick = () => {
+    const s = slip.sel;
+    const stake = Number(slip.stake) || 0;
+    if (!s || stake <= 0) return;
+    const g2 = GAMES.find((x) => x.id === s.g);
+    PLAYS.push({ g: s.g, side: s.side, kind: s.kind, line: s.line, odds: s.odds, stake, matched: stake, when: g2.when, away: g2.away.slice(0, 2), home: g2.home.slice(0, 2) });
+    savePlays();
+    slip.sel = null;
+    location.hash = "#/my-trades";
+    render();
+  };
+  for (const c of document.querySelectorAll(".cell[data-g]")) c.onclick = () => { slip.sel = { g: c.dataset.g, side: c.dataset.side, kind: c.dataset.kind, line: c.dataset.line, odds: c.dataset.odds }; render(); };
+  const st = $("#stake");
+  if (st) st.oninput = () => { slip.stake = st.value.replace(/[^\d.]/g, ""); const s = slip.sel; const w = toWin(Number(slip.stake) || 0, s.odds); $("#towin").textContent = money(w); $(".place").innerHTML = ((Number(slip.stake) || 0) > 0 ? "Place Trade" : "Enter a cost") + "<small>Net winnings per market are subject to a 2% fee</small>"; };
+  const rm = $("#rm");
+  if (rm) rm.onclick = () => { slip.sel = null; render(); };
+  for (const b of document.querySelectorAll("button[data-go]")) b.onclick = () => { location.hash = b.dataset.go; };
+  for (const s of document.querySelectorAll("#mode span")) s.onclick = () => { mode = s.dataset.mode; sessionStorage.setItem("mock-mode", mode); render(); };
+};
+window.addEventListener("hashchange", render);
+render();
+</script>
+</body></html>

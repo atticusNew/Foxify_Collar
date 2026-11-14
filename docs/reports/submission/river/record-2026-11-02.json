@@ -1,0 +1,1065 @@
+{
+ "at": "2026-11-02T21:15:04.276Z",
+ "shadow": {
+  "openCount": 198,
+  "settledCount": 1124,
+  "voidCount": 2,
+  "floorSaves": 484,
+  "capGiveups": 640,
+  "protectedTotalCents": 9208188,
+  "nakedTotalCents": 9546960,
+  "deltaTotalCents": -338772,
+  "realizedDeltaBpsOfStake": -202,
+  "quotedAvgEvBps": 253,
+  "routeSplit": {
+   "polymarket": 623,
+   "kalshi_self": 785,
+   "novig": 29,
+   "prophetx": 1
+  },
+  "firstOpenedAt": "2026-09-12T17:07:57.832Z",
+  "lastSettledAt": "2026-11-02T21:04:28.670Z",
+  "writer": {
+   "settledPnlCents": 48852,
+   "settledPnlBpsOfStake": 29,
+   "pnlWhenHolderWonCents": 26908,
+   "pnlWhenHolderLostCents": 21944,
+   "settledWhenHolderWon": 640,
+   "settledWhenHolderLost": 484,
+   "capSlicesKeptCents": 3090973,
+   "floorsPaidCents": 2352638,
+   "creditsPaidCents": 399563,
+   "hedgeCostCents": 5740094,
+   "hedgePayoutsCents": 5450174,
+   "takeBookedCents": 48851,
+   "takeLockedOpenCents": 7687,
+   "byLeague": {
+    "mlb": {
+     "settled": 240,
+     "open": 0,
+     "pnlCents": 10720,
+     "stakeCents": 3600000
+    },
+    "crypto": {
+     "settled": 496,
+     "open": 21,
+     "pnlCents": 16684,
+     "stakeCents": 7440000
+    },
+    "nfl": {
+     "settled": 156,
+     "open": 30,
+     "pnlCents": 8170,
+     "stakeCents": 2327700
+    },
+    "nba": {
+     "settled": 232,
+     "open": 48,
+     "pnlCents": 13278,
+     "stakeCents": 3412386
+    },
+    "nhl": {
+     "settled": 0,
+     "open": 99,
+     "pnlCents": 0,
+     "stakeCents": 0
+    }
+   }
+  },
+  "identity": {
+   "settled": 1124,
+   "writerPnlCents": 48852,
+   "takeBookedCents": 48851,
+   "gapCents": 1,
+   "gapBpsOfStake": 0,
+   "hedgeNetCents": -289920,
+   "holderLegsNetCents": 338772,
+   "holds": true
+  },
+  "segments": {
+   "byRoute": {
+    "polymarket": {
+     "opened": 623,
+     "settled": 556,
+     "stakeSettledCents": 8340000,
+     "quotedAvgEvBps": 169,
+     "holderDeltaCents": -101832,
+     "holderDeltaBpsOfStake": -122,
+     "creditsCents": 268218,
+     "takeCents": 30114,
+     "writerPnlCents": 30114
+    },
+    "kalshi_self": {
+     "opened": 785,
+     "settled": 564,
+     "stakeSettledCents": 8434200,
+     "quotedAvgEvBps": 323,
+     "holderDeltaCents": -236050,
+     "holderDeltaBpsOfStake": -280,
+     "creditsCents": 131210,
+     "takeCents": 18720,
+     "writerPnlCents": 18720
+    },
+    "novig": {
+     "opened": 29,
+     "settled": 3,
+     "stakeSettledCents": 4876,
+     "quotedAvgEvBps": 166,
+     "holderDeltaCents": -521,
+     "holderDeltaBpsOfStake": -1068,
+     "creditsCents": 90,
+     "takeCents": 12,
+     "writerPnlCents": 13
+    },
+    "prophetx": {
+     "opened": 1,
+     "settled": 1,
+     "stakeSettledCents": 1010,
+     "quotedAvgEvBps": 248,
+     "holderDeltaCents": -369,
+     "holderDeltaBpsOfStake": -3653,
+     "creditsCents": 45,
+     "takeCents": 5,
+     "writerPnlCents": 5
+    }
+   },
+   "byLeague": {
+    "mlb": {
+     "opened": 251,
+     "settled": 240,
+     "stakeSettledCents": 3600000,
+     "quotedAvgEvBps": 268,
+     "holderDeltaCents": -59344,
+     "holderDeltaBpsOfStake": -165,
+     "creditsCents": 97556,
+     "takeCents": 10720,
+     "writerPnlCents": 10720
+    },
+    "crypto": {
+     "opened": 555,
+     "settled": 496,
+     "stakeSettledCents": 7440000,
+     "quotedAvgEvBps": 277,
+     "holderDeltaCents": -159673,
+     "holderDeltaBpsOfStake": -215,
+     "creditsCents": 115727,
+     "takeCents": 16684,
+     "writerPnlCents": 16684
+    },
+    "nfl": {
+     "opened": 206,
+     "settled": 156,
+     "stakeSettledCents": 2327700,
+     "quotedAvgEvBps": 237,
+     "holderDeltaCents": -43360,
+     "holderDeltaBpsOfStake": -186,
+     "creditsCents": 70190,
+     "takeCents": 8170,
+     "writerPnlCents": 8170
+    },
+    "nba": {
+     "opened": 326,
+     "settled": 232,
+     "stakeSettledCents": 3412386,
+     "quotedAvgEvBps": 212,
+     "holderDeltaCents": -76395,
+     "holderDeltaBpsOfStake": -224,
+     "creditsCents": 116090,
+     "takeCents": 13277,
+     "writerPnlCents": 13278
+    },
+    "nhl": {
+     "opened": 100,
+     "settled": 0,
+     "stakeSettledCents": 0,
+     "quotedAvgEvBps": 252,
+     "holderDeltaCents": 0,
+     "holderDeltaBpsOfStake": null,
+     "creditsCents": 0,
+     "takeCents": 0,
+     "writerPnlCents": 0
+    }
+   },
+   "byKind": {
+    "sports": {
+     "opened": 883,
+     "settled": 628,
+     "stakeSettledCents": 9340086,
+     "quotedAvgEvBps": 238,
+     "holderDeltaCents": -179099,
+     "holderDeltaBpsOfStake": -192,
+     "creditsCents": 283836,
+     "takeCents": 32167,
+     "writerPnlCents": 32168
+    },
+    "crypto": {
+     "opened": 555,
+     "settled": 496,
+     "stakeSettledCents": 7440000,
+     "quotedAvgEvBps": 277,
+     "holderDeltaCents": -159673,
+     "holderDeltaBpsOfStake": -215,
+     "creditsCents": 115727,
+     "takeCents": 16684,
+     "writerPnlCents": 16684
+    }
+   }
+  },
+  "closed": {
+   "count": 114,
+   "unpriced": 9,
+   "protectedAtCloseCents": 835450,
+   "nakedAtCloseCents": 869405,
+   "deltaCents": -33955,
+   "withMid": 114,
+   "protectedAtMidCents": 890082,
+   "unwindFrictionCents": 54632,
+   "feesCents": 29083,
+   "writerPnlCents": 6062,
+   "takeBookedCents": 6062,
+   "stakeCents": 1710000,
+   "byKind": {
+    "sports": {
+     "closed": 76,
+     "unpriced": 9
+    },
+    "crypto": {
+     "closed": 38,
+     "unpriced": 0
+    }
+   }
+  },
+  "flow": {
+   "asOf": "2026-11-02T21:15:04.482Z",
+   "windowDays": 30,
+   "last30Days": {
+    "positions": 761,
+    "contractsMilli": 66560330,
+    "contracts": 66560,
+    "hedgeNotionalCents": 3033153,
+    "stakeCents": 11335086,
+    "since": "2026-10-03T21:15:04.482Z"
+   },
+   "allTime": {
+    "positions": 1438,
+    "contractsMilli": 145770830,
+    "contracts": 145771,
+    "hedgeNotionalCents": 6726686,
+    "stakeCents": 21490086,
+    "since": "2026-09-12T17:07:57.832Z"
+   }
+  },
+  "counterfactuals": {
+   "recordedSince": "2026-09-20T18:34:11.441Z",
+   "positionsWithCounterfactuals": 1168
+  }
+ },
+ "parlays": {
+  "tickets": 113,
+  "inPlay": 8,
+  "atLastPick": 6,
+  "locksPriced": 41,
+  "refusedOnly": 0,
+  "busted": 68,
+  "voided": 0,
+  "creditsCents": 5945,
+  "settled": {
+   "count": 37,
+   "withLock": 35,
+   "lockPaidCents": 149805,
+   "sellPaidCents": 160997,
+   "holdPaidCents": 131600,
+   "lockBeatSell": 20,
+   "holdBeatBoth": 20,
+   "floorSaves": 15,
+   "capGiveups": 20,
+   "identityHolds": true
+  },
+  "refusals": {
+   "no verified pairing for the last pick": 3
+  },
+  "firstTicketAt": "2026-10-08T22:00:34.215Z"
+ },
+ "scoreboard": {
+  "at": "2026-11-02T21:15:05.184Z",
+  "venues": [
+   "Kalshi",
+   "Polymarket",
+   "ProphetX",
+   "Novig"
+  ],
+  "feeRules": [
+   {
+    "venue": "Kalshi",
+    "rule": "0.07 \u00d7 P \u00d7 (1 \u2212 P) per contract, charged at match to the side crossing the book; at most 1.75\u00a2 at P = 50\u00a2",
+    "asOf": "2026-11-02"
+   },
+   {
+    "venue": "Polymarket",
+    "rule": "the engine's configured rate on the hedge's cost, as recorded on each hedge (zero as configured today)",
+    "asOf": "2026-11-02"
+   },
+   {
+    "venue": "ProphetX",
+    "rule": "2% of net gains at settlement, nothing at match; folded as 2 \u00d7 (1 \u2212 P) cents per contract",
+    "asOf": "2026-11-02"
+   },
+   {
+    "venue": "Novig",
+    "rule": "none pre-game, either side; 0.06 \u00d7 P \u00d7 (1 \u2212 P) on the side crossing the book while the game is live (our hedges are pre-game)",
+    "asOf": "2026-11-02"
+   }
+  ],
+  "weeks": [
+   {
+    "from": "2026-11-02",
+    "to": "2026-11-08",
+    "label": "Week of Nov 2 \u2013 8",
+    "n": 140,
+    "taps": 0,
+    "contracts": 20887,
+    "notionalCents": 293758,
+    "singles": {
+     "n": 137,
+     "contracts": 20550,
+     "otherSide": [
+      {
+       "venue": "Kalshi",
+       "n": 126,
+       "contracts": 18900,
+       "sharePct": 92
+      },
+      {
+       "venue": "Novig",
+       "n": 11,
+       "contracts": 1650,
+       "sharePct": 8
+      }
+     ]
+    },
+    "parlays": {
+     "n": 3,
+     "contracts": 337,
+     "otherSide": [
+      {
+       "venue": "Novig",
+       "n": 3,
+       "contracts": 337,
+       "sharePct": 100
+      }
+     ],
+     "unrouted": 0
+    },
+    "edge": {
+     "n": 14,
+     "byVenue": [
+      {
+       "venue": "Novig",
+       "n": 11,
+       "avgEdgeCentsPerContract": -0.32,
+       "avgEdgeAllInBps": 38
+      },
+      {
+       "venue": "Kalshi",
+       "n": 3,
+       "avgEdgeCentsPerContract": 0.13,
+       "avgEdgeAllInBps": 38
+      }
+     ]
+    },
+    "fees": {
+     "n": 140,
+     "byVenue": [
+      {
+       "venue": "Kalshi",
+       "n": 126,
+       "avgFeeCentsPerContract": 0.43
+      },
+      {
+       "venue": "Novig",
+       "n": 14,
+       "avgFeeCentsPerContract": 0
+      }
+     ]
+    },
+    "availability": {
+     "n": 106,
+     "byVenue": [
+      {
+       "venue": "Kalshi",
+       "asked": 106,
+       "priced": 106,
+       "pricedPct": 100
+      },
+      {
+       "venue": "ProphetX",
+       "asked": 106,
+       "priced": 8,
+       "pricedPct": 7.5
+      },
+      {
+       "venue": "Novig",
+       "asked": 106,
+       "priced": 14,
+       "pricedPct": 13.2
+      }
+     ]
+    },
+    "refusals": {
+     "refused": 12,
+     "offered": 137,
+     "priced": 149,
+     "refusedPct": 8.1,
+     "byReason": [
+      {
+       "reason": "too rich to offer",
+       "count": 11
+      },
+      {
+       "reason": "credit too small to offer",
+       "count": 1
+      }
+     ]
+    },
+    "byLeague": [
+     {
+      "league": "nhl",
+      "n": 100,
+      "contracts": 15000,
+      "otherSide": [
+       {
+        "venue": "Kalshi",
+        "n": 89,
+        "contracts": 13350,
+        "sharePct": 89
+       },
+       {
+        "venue": "Novig",
+        "n": 11,
+        "contracts": 1650,
+        "sharePct": 11
+       }
+      ],
+      "availability": [
+       {
+        "venue": "Kalshi",
+        "asked": 100,
+        "priced": 100,
+        "pricedPct": 100
+       },
+       {
+        "venue": "ProphetX",
+        "asked": 100,
+        "priced": 8,
+        "pricedPct": 8
+       },
+       {
+        "venue": "Novig",
+        "asked": 100,
+        "priced": 14,
+        "pricedPct": 14
+       }
+      ]
+     },
+     {
+      "league": "crypto",
+      "n": 31,
+      "contracts": 4650,
+      "otherSide": [
+       {
+        "venue": "Kalshi",
+        "n": 31,
+        "contracts": 4650,
+        "sharePct": 100
+       }
+      ],
+      "availability": []
+     },
+     {
+      "league": "nba",
+      "n": 7,
+      "contracts": 1014,
+      "otherSide": [
+       {
+        "venue": "Kalshi",
+        "n": 6,
+        "contracts": 900,
+        "sharePct": 88.8
+       },
+       {
+        "venue": "Novig",
+        "n": 1,
+        "contracts": 114,
+        "sharePct": 11.2
+       }
+      ],
+      "availability": [
+       {
+        "venue": "Kalshi",
+        "asked": 6,
+        "priced": 6,
+        "pricedPct": 100
+       },
+       {
+        "venue": "ProphetX",
+        "asked": 6,
+        "priced": 0,
+        "pricedPct": 0
+       },
+       {
+        "venue": "Novig",
+        "asked": 6,
+        "priced": 0,
+        "pricedPct": 0
+       }
+      ]
+     },
+     {
+      "league": "nfl",
+      "n": 2,
+      "contracts": 223,
+      "otherSide": [
+       {
+        "venue": "Novig",
+        "n": 2,
+        "contracts": 223,
+        "sharePct": 100
+       }
+      ],
+      "availability": []
+     }
+    ]
+   },
+   {
+    "from": "2026-10-26",
+    "to": "2026-11-01",
+    "label": "Week of Oct 26 \u2013 Nov 1",
+    "n": 220,
+    "taps": 5,
+    "contracts": 31392.86,
+    "notionalCents": 803360,
+    "singles": {
+     "n": 209,
+     "contracts": 30673.86,
+     "otherSide": [
+      {
+       "venue": "Kalshi",
+       "n": 135,
+       "contracts": 20115,
+       "sharePct": 65.6
+      },
+      {
+       "venue": "Polymarket",
+       "n": 55,
+       "contracts": 8250,
+       "sharePct": 26.9
+      },
+      {
+       "venue": "Novig",
+       "n": 18,
+       "contracts": 2298.76,
+       "sharePct": 7.5
+      },
+      {
+       "venue": "ProphetX",
+       "n": 1,
+       "contracts": 10.1,
+       "sharePct": 0
+      }
+     ]
+    },
+    "parlays": {
+     "n": 11,
+     "contracts": 719,
+     "otherSide": [],
+     "unrouted": 11
+    },
+    "edge": {
+     "n": 29,
+     "byVenue": [
+      {
+       "venue": "Novig",
+       "n": 18,
+       "avgEdgeCentsPerContract": 0,
+       "avgEdgeAllInBps": 58
+      },
+      {
+       "venue": "Kalshi",
+       "n": 10,
+       "avgEdgeCentsPerContract": 0.32,
+       "avgEdgeAllInBps": 425
+      },
+      {
+       "venue": "ProphetX",
+       "n": 1,
+       "avgEdgeCentsPerContract": 0.79,
+       "avgEdgeAllInBps": -308
+      }
+     ]
+    },
+    "fees": {
+     "n": 209,
+     "byVenue": [
+      {
+       "venue": "Kalshi",
+       "n": 135,
+       "avgFeeCentsPerContract": 0.63
+      },
+      {
+       "venue": "Polymarket",
+       "n": 55,
+       "avgFeeCentsPerContract": 0
+      },
+      {
+       "venue": "Novig",
+       "n": 18,
+       "avgFeeCentsPerContract": 0
+      },
+      {
+       "venue": "ProphetX",
+       "n": 1,
+       "avgFeeCentsPerContract": 0.72
+      }
+     ]
+    },
+    "availability": {
+     "n": 100,
+     "byVenue": [
+      {
+       "venue": "Kalshi",
+       "asked": 100,
+       "priced": 100,
+       "pricedPct": 100
+      },
+      {
+       "venue": "ProphetX",
+       "asked": 100,
+       "priced": 2,
+       "pricedPct": 2
+      },
+      {
+       "venue": "Novig",
+       "asked": 95,
+       "priced": 29,
+       "pricedPct": 30.5
+      }
+     ]
+    },
+    "refusals": {
+     "refused": 23,
+     "offered": 209,
+     "priced": 232,
+     "refusedPct": 9.9,
+     "byReason": [
+      {
+       "reason": "too rich to offer",
+       "count": 20
+      },
+      {
+       "reason": "credit too small to offer",
+       "count": 3
+      }
+     ]
+    },
+    "byLeague": [
+     {
+      "league": "nba",
+      "n": 116,
+      "contracts": 16723.86,
+      "otherSide": [
+       {
+        "venue": "Kalshi",
+        "n": 70,
+        "contracts": 10365,
+        "sharePct": 62
+       },
+       {
+        "venue": "Polymarket",
+        "n": 42,
+        "contracts": 6300,
+        "sharePct": 37.7
+       },
+       {
+        "venue": "Novig",
+        "n": 3,
+        "contracts": 48.76,
+        "sharePct": 0.3
+       },
+       {
+        "venue": "ProphetX",
+        "n": 1,
+        "contracts": 10.1,
+        "sharePct": 0.1
+       }
+      ],
+      "availability": [
+       {
+        "venue": "Kalshi",
+        "asked": 72,
+        "priced": 72,
+        "pricedPct": 100
+       },
+       {
+        "venue": "ProphetX",
+        "asked": 72,
+        "priced": 2,
+        "pricedPct": 2.8
+       },
+       {
+        "venue": "Novig",
+        "asked": 67,
+        "priced": 4,
+        "pricedPct": 6
+       }
+      ]
+     },
+     {
+      "league": "crypto",
+      "n": 52,
+      "contracts": 7800,
+      "otherSide": [
+       {
+        "venue": "Kalshi",
+        "n": 52,
+        "contracts": 7800,
+        "sharePct": 100
+       }
+      ],
+      "availability": []
+     },
+     {
+      "league": "nfl",
+      "n": 39,
+      "contracts": 5850,
+      "otherSide": [
+       {
+        "venue": "Novig",
+        "n": 15,
+        "contracts": 2250,
+        "sharePct": 38.5
+       },
+       {
+        "venue": "Kalshi",
+        "n": 13,
+        "contracts": 1950,
+        "sharePct": 33.3
+       },
+       {
+        "venue": "Polymarket",
+        "n": 11,
+        "contracts": 1650,
+        "sharePct": 28.2
+       }
+      ],
+      "availability": [
+       {
+        "venue": "Kalshi",
+        "asked": 28,
+        "priced": 28,
+        "pricedPct": 100
+       },
+       {
+        "venue": "ProphetX",
+        "asked": 28,
+        "priced": 0,
+        "pricedPct": 0
+       },
+       {
+        "venue": "Novig",
+        "asked": 28,
+        "priced": 25,
+        "pricedPct": 89.3
+       }
+      ]
+     },
+     {
+      "league": "mlb",
+      "n": 2,
+      "contracts": 300,
+      "otherSide": [
+       {
+        "venue": "Polymarket",
+        "n": 2,
+        "contracts": 300,
+        "sharePct": 100
+       }
+      ],
+      "availability": []
+     }
+    ]
+   },
+   {
+    "from": "2026-10-19",
+    "to": "2026-10-25",
+    "label": "Week of Oct 19 \u2013 25",
+    "n": 164,
+    "taps": 0,
+    "contracts": 23680,
+    "notionalCents": 737675,
+    "singles": {
+     "n": 153,
+     "contracts": 22950,
+     "otherSide": [
+      {
+       "venue": "Polymarket",
+       "n": 108,
+       "contracts": 16200,
+       "sharePct": 70.6
+      },
+      {
+       "venue": "Kalshi",
+       "n": 45,
+       "contracts": 6750,
+       "sharePct": 29.4
+      }
+     ]
+    },
+    "parlays": {
+     "n": 11,
+     "contracts": 730,
+     "otherSide": [],
+     "unrouted": 11
+    },
+    "edge": {
+     "n": 0,
+     "byVenue": []
+    },
+    "fees": {
+     "n": 153,
+     "byVenue": [
+      {
+       "venue": "Polymarket",
+       "n": 108,
+       "avgFeeCentsPerContract": 0
+      },
+      {
+       "venue": "Kalshi",
+       "n": 45,
+       "avgFeeCentsPerContract": 0.96
+      }
+     ]
+    },
+    "availability": {
+     "n": 0,
+     "byVenue": []
+    },
+    "refusals": {
+     "refused": 0,
+     "offered": 153,
+     "priced": 153,
+     "refusedPct": 0,
+     "byReason": []
+    },
+    "byLeague": [
+     {
+      "league": "nba",
+      "n": 83,
+      "contracts": 12450,
+      "otherSide": [
+       {
+        "venue": "Polymarket",
+        "n": 77,
+        "contracts": 11550,
+        "sharePct": 92.8
+       },
+       {
+        "venue": "Kalshi",
+        "n": 6,
+        "contracts": 900,
+        "sharePct": 7.2
+       }
+      ],
+      "availability": []
+     },
+     {
+      "league": "crypto",
+      "n": 37,
+      "contracts": 5550,
+      "otherSide": [
+       {
+        "venue": "Kalshi",
+        "n": 37,
+        "contracts": 5550,
+        "sharePct": 100
+       }
+      ],
+      "availability": []
+     },
+     {
+      "league": "nfl",
+      "n": 27,
+      "contracts": 4050,
+      "otherSide": [
+       {
+        "venue": "Polymarket",
+        "n": 26,
+        "contracts": 3900,
+        "sharePct": 96.3
+       },
+       {
+        "venue": "Kalshi",
+        "n": 1,
+        "contracts": 150,
+        "sharePct": 3.7
+       }
+      ],
+      "availability": []
+     },
+     {
+      "league": "mlb",
+      "n": 6,
+      "contracts": 900,
+      "otherSide": [
+       {
+        "venue": "Polymarket",
+        "n": 5,
+        "contracts": 750,
+        "sharePct": 83.3
+       },
+       {
+        "venue": "Kalshi",
+        "n": 1,
+        "contracts": 150,
+        "sharePct": 16.7
+       }
+      ],
+      "availability": []
+     }
+    ]
+   },
+   {
+    "from": "2026-10-12",
+    "to": "2026-10-18",
+    "label": "Week of Oct 12 \u2013 18",
+    "n": 135,
+    "taps": 1,
+    "contracts": 19393,
+    "notionalCents": 614195,
+    "singles": {
+     "n": 125,
+     "contracts": 18627,
+     "otherSide": [
+      {
+       "venue": "Polymarket",
+       "n": 88,
+       "contracts": 13200,
+       "sharePct": 70.9
+      },
+      {
+       "venue": "Kalshi",
+       "n": 37,
+       "contracts": 5427,
+       "sharePct": 29.1
+      }
+     ]
+    },
+    "parlays": {
+     "n": 10,
+     "contracts": 766,
+     "otherSide": [],
+     "unrouted": 10
+    },
+    "edge": {
+     "n": 0,
+     "byVenue": []
+    },
+    "fees": {
+     "n": 125,
+     "byVenue": [
+      {
+       "venue": "Polymarket",
+       "n": 88,
+       "avgFeeCentsPerContract": 0
+      },
+      {
+       "venue": "Kalshi",
+       "n": 37,
+       "avgFeeCentsPerContract": 0.96
+      }
+     ]
+    },
+    "availability": {
+     "n": 0,
+     "byVenue": []
+    },
+    "refusals": {
+     "refused": 0,
+     "offered": 125,
+     "priced": 125,
+     "refusedPct": 0,
+     "byReason": []
+    },
+    "byLeague": [
+     {
+      "league": "nba",
+      "n": 61,
+      "contracts": 9150,
+      "otherSide": [
+       {
+        "venue": "Polymarket",
+        "n": 59,
+        "contracts": 8850,
+        "sharePct": 96.7
+       },
+       {
+        "venue": "Kalshi",
+        "n": 2,
+        "contracts": 300,
+        "sharePct": 3.3
+       }
+      ],
+      "availability": []
+     },
+     {
+      "league": "crypto",
+      "n": 33,
+      "contracts": 4950,
+      "otherSide": [
+       {
+        "venue": "Kalshi",
+        "n": 33,
+        "contracts": 4950,
+        "sharePct": 100
+       }
+      ],
+      "availability": []
+     },
+     {
+      "league": "nfl",
+      "n": 24,
+      "contracts": 3477,
+      "otherSide": [
+       {
+        "venue": "Polymarket",
+        "n": 22,
+        "contracts": 3300,
+        "sharePct": 94.9
+       },
+       {
+        "venue": "Kalshi",
+        "n": 2,
+        "contracts": 177,
+        "sharePct": 5.1
+       }
+      ],
+      "availability": []
+     },
+     {
+      "league": "mlb",
+      "n": 7,
+      "contracts": 1050,
+      "otherSide": [
+       {
+        "venue": "Polymarket",
+        "n": 7,
+        "contracts": 1050,
+        "sharePct": 100
+       }
+      ],
+      "availability": []
+     }
+    ]
+   }
+  ]
+ }
+}

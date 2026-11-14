@@ -30,6 +30,8 @@ export interface KalshiMarket {
   volume: number;
   openInterest: number;
   rulesPrimary: string;
+  /** ties, postponements, the source of truth; absent on objects built before 2026-10-11 */
+  rulesSecondary?: string;
 }
 
 /** A public Kalshi trade print (used for honest showcase entry prices). */

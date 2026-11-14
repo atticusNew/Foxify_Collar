@@ -1,0 +1,996 @@
+# ─────────────────────────────────────────────────────────────────────────
+# render-event-demos.yaml: the Earn & Protect EVENT lane, five services
+#
+# FOUR ARE READ-ONLY. They read market data and serve pages. None of them
+# places an order.
+#
+#   atticus-event-demo-btc          Tier 1 demo: a Kalshi BTC price event hedged
+#                                   on live OKX option books. No credentials.
+#   atticus-event-demo-cross-venue  Tier 2 demo: the public board and embed for
+#                                   a Kalshi sports position. Quotes only.
+#   atticus-btc-curve               BTC curve report, with the BTC pairs UI at
+#                                   /pairs and the sports venues report (one
+#                                   game on Kalshi, Polymarket US, Novig,
+#                                   ProphetX and Crypto.com side by side) at
+#                                   /sports, in one process.
+#   atticus-pm-clob-egress-proxy    GET-only relay for clob.polymarket.com.
+#                                   Holds no credentials.
+#
+# ONE HOLDS VENUE CREDENTIALS AND CAN SEND REAL ORDERS WHEN ARMED.
+#
+#   atticus-event-shadow            The public track record, the lock path the
+#                                   browser extension and the member page call,
+#                                   and the operator views. Its disk holds the
+#                                   only copy of the record and the lock ledgers.
+#
+#   As committed in this file it buys nothing: every hedge is filled on paper
+#   at the book. The trading keys (Kalshi, Novig, the aggregator's TRADE key)
+#   are set in the Render dashboard. A hedge order leaves only when all of
+#   these hold at once:
+#     EVENT_HEDGE_STRATEGY=live        anything else simulates every hedge
+#     a key for the venue is present   Kalshi direct, or the aggregator's pod
+#                                      with EVENT_HEDGE_LIVE_VIA=aggregator;
+#                                      Novig with its own trading key
+#     EVENT_HEDGE_LIVE_TICKERS         names the ticker; empty allows nothing,
+#                                      * allows any ticker the engine priced
+#     the per-order and per-day caps   both have room for the order
+#     EVENT_HEDGE_LIVE_SEND=yes        any other value is a dry run
+#     EVENT_HEDGE_KILL_SWITCH          is off; set to 1, no hedge order and
+#                                      no quote request leaves, in any
+#                                      strategy, whatever else is set
+#   Anything the rails hold back is simulated at the book, with the reason on
+#   the receipt. Two more things on this service act on a real account: with
+#   the member app set up (MEMBER_APP_*), a venue member who connects sells
+#   part of their own position in their own account; and the operator routes
+#   behind EVENT_X_ADMIN_TOKEN can move cash between our Kalshi subaccounts and
+#   mint or revoke Kalshi API keys. The comments in its block below say how
+#   each is switched on.
+#
+# SECRETS live only in the Render dashboard, never in git. This file carries
+# public values, `generateValue` (Render makes the value) and `sync: false`
+# (set by hand in the dashboard). None of the five signs for an on-chain
+# address: the venues are reached with API keys only.
+#
+# DEPLOYS. Every service follows the tip of cursor/tier2-cross-venue-2bfa
+# (autoDeploy), so every merge to that branch redeploys every service unless
+# all the files the merge changed are on that service's
+# buildFilter.ignoredPaths. A restart of atticus-event-shadow interrupts the
+# live lock path, so its filter matters most. The rule for the filters is
+# written above the first one, and a test guards them.
+#
+# ISOLATION. Nothing here touches the live production Earn & Protect deploy:
+# the five start scripts load only services/api/scripts and, under
+# services/api/src, eventCollar, btcCurve and sportsVenues.
+#
+# THE SERVICES IN MORE DETAIL
+#
+#   atticus-event-demo-btc          Tier 1: Kalshi BTC price event, hedged on
+#                                   live OKX option books. Region singapore:
+#                                   OKX is reliably reachable there (same
+#                                   region as the existing OKX services).
+#
+#   atticus-event-demo-cross-venue  Tier 2: Kalshi sports market, hedged with
+#                                   the SAME game on the venues named in
+#                                   EVENT_HEDGE_VENUES (Kalshi, ProphetX and
+#                                   Novig as committed; unset, every route is
+#                                   offered, Polymarket included). Region
+#                                   oregon: Kalshi + Polymarket public APIs are
+#                                   proven reachable from US networks. Disk
+#                                   keeps the funnel counters and the quote
+#                                   receipts. Carries an operator token, the
+#                                   slate key and, when set in the dashboard,
+#                                   a read key for the Novig book; nothing
+#                                   that sends an order.
+#
+#   atticus-event-shadow            The shadow run: the cross-venue router
+#                                   quoted continuously, every position marked
+#                                   against official results as events settle,
+#                                   kept on an append-only ledger. Serves the
+#                                   public record, the venue slates, the
+#                                   parlay record, Lock in (the extension's
+#                                   tap and the member page at /app) and the
+#                                   operator views, the ledger export among
+#                                   them. Region oregon. Disk keeps the
+#                                   ledgers; they must survive deploys.
+#
+#   atticus-btc-curve               Read-only BTC curve report: Kalshi and
+#                                   Polymarket US strike ladders side by side
+#                                   against the Deribit-implied distribution,
+#                                   gaps over time, cost of latency, static vs
+#                                   dynamic hedge replays, Lock in along the
+#                                   hourly ladder. Region singapore (Deribit and
+#                                   OKX reachable). Disk keeps the snapshots.
+#                                   docs/btc-curve-report.md
+#
+#   (no service) /sports on         Read-only sports venues report: the same
+#   atticus-btc-curve               game's winner market on Kalshi, Polymarket
+#                                   US, Novig, ProphetX and Crypto.com side by side after fees, the
+#                                   consensus and who sits off it, the cheapest
+#                                   other side for every position, the crosses
+#                                   that lock, gaps over time. 60-second cycle
+#                                   inside the curve process, behind the same
+#                                   key, so no second service is paid for; its
+#                                   snapshots sit on the curve disk. It was
+#                                   never deployed as a service of its own.
+#                                   The trade tape of Crypto.com's exchange is
+#                                   kept per game on the same disk. Lock in
+#                                   replayed on it is NOT under this key: it is
+#                                   a page for one reader at /prospect, under
+#                                   PROSPECT_PAGE_KEY (below). The same replay on
+#                                   DraftKings' exchange, from its public daily
+#                                   files, is a page for that reader at
+#                                   /draftkings, under DRAFTKINGS_PAGE_KEY.
+#                                   docs/sports-venues-report.md
+#
+#   (no service) /pairs on          BTC pairs UI for a trader: the same
+#   atticus-btc-curve               contract on Kalshi and Polymarket US, the
+#                                   15-minute up/down window, next close and
+#                                   5 PM ET daily at the money and one strike
+#                                   each way, scored for how cleanly both
+#                                   quote it, the bands between strikes priced
+#                                   against the venues and a realized-vol
+#                                   model, the index's regime, one Launch
+#                                   button per tenor that sends the picked pair
+#                                   to his engine (POST) or opens his page with
+#                                   it, JSON and a stream under /pairs/api/*.
+#                                   10-second cycle inside the curve process,
+#                                   so no second service is paid for.
+#                                   docs/btc-pairs.md
+#
+#   atticus-pm-clob-egress-proxy    GET-only relay for clob.polymarket.com,
+#                                   for operator machines whose ISP blocks it
+#                                   (observed: silent connect timeouts). Local
+#                                   use: PM_CLOB_REST_BASE=
+#                                   https://<service>.onrender.com/t/<PROXY_TOKEN>
+#                                   Holds no credentials; path allowlist /book.
+#
+# Deploy: Render dashboard → New → Blueprint → select this file on branch
+# cursor/tier2-cross-venue-2bfa.
+# ─────────────────────────────────────────────────────────────────────────
+services:
+  - type: web
+    name: atticus-event-demo-btc
+    runtime: node
+    plan: starter
+    region: singapore
+    branch: cursor/tier2-cross-venue-2bfa
+    autoDeploy: true
+    buildCommand: npm ci
+    startCommand: npm --workspace services/api exec tsx scripts/eventProtectDemoService.ts
+    healthCheckPath: /healthz
+    # BUILD FILTERS. Every merge to the branch redeploys every service in this file
+    # unless every file the merge changed is on that service's ignoredPaths. Only
+    # ignoredPaths are used, never `paths`, so a new file nobody has thought about
+    # always deploys: a needless restart costs less than a service that silently
+    # stays stale. Ignored for every service: the docs, any Markdown file, the
+    # tests, the GitHub workflows and the browser extensions under demo/ (no service
+    # reads, serves or packs any of them). After those, each service ignores only
+    # the source trees and scripts its start script does not import. The on-chain
+    # venues page (render-onchain.yaml) is a separate lane with its own service: its
+    # source, its script and its blueprint are ignored by every service here.
+    # services/api/tests/eventDeployFilters.test.ts computes what each start script
+    # imports and fails if an ignored path covers any of it, so check there before
+    # adding a line. Render always acts on a change to this file itself.
+    buildFilter:
+      ignoredPaths:
+        - docs/**
+        - "**/*.md"
+        - services/api/tests/**
+        - .github/**
+        - demo/**
+        - services/api/src/btcCurve/**
+        - services/api/src/sportsVenues/**
+        - services/api/src/eventCollar/crossVenue/**
+        - services/api/scripts/btc*.ts
+        - services/api/scripts/sportsVenuesReportService.ts
+        - services/api/scripts/eventShadow*.ts
+        - services/api/scripts/eventProtectX*.ts
+        - services/api/scripts/eventProtectEmbedHtml.ts
+        - services/api/scripts/memberApp*.ts
+        - services/api/src/onchainVenues/**
+        - services/api/scripts/onchainVenuesService.ts
+        - render-onchain.yaml
+    envVars:
+      - key: NODE_ENV
+        value: production
+
+  - type: web
+    name: atticus-btc-curve
+    runtime: node
+    plan: starter
+    region: singapore
+    branch: cursor/tier2-cross-venue-2bfa
+    autoDeploy: true
+    buildCommand: npm ci
+    startCommand: npm --workspace services/api exec tsx scripts/btcCurveReportService.ts
+    healthCheckPath: /healthz
+    buildFilter:
+      ignoredPaths:
+        - docs/**
+        - "**/*.md"
+        - services/api/tests/**
+        - .github/**
+        - demo/**
+        - services/api/scripts/event*.ts
+        - services/api/scripts/memberApp*.ts
+        - services/api/scripts/sportsVenuesReportService.ts
+        - services/api/src/onchainVenues/**
+        - services/api/scripts/onchainVenuesService.ts
+        - render-onchain.yaml
+    # src/sportsVenues and src/eventCollar/crossVenue are not ignored here: the sports page at
+    # /sports is in this process and its readers import the cross-venue team tables and venue
+    # clients, so a change to either redeploys this service.
+    #
+    # What is kept: every day, forever. One file per UTC day for the curve snapshots
+    # (snapshots-YYYY-MM-DD.jsonl) and, under pairs/, one for the 10-second pairs cycles
+    # (gaps-...) and one for the lock episodes (episodes-...), and, under sports/, one for the
+    # sports venues snapshots (snapshots-...). Nothing is deleted unless
+    # BTC_CURVE_RETAIN_DAYS is set to a whole number of days. Unset, empty, 0, all and none
+    # keep everything; a value that cannot be read keeps everything too and /healthz says so.
+    #
+    # The gzip step: one hour after a UTC day ends, its file is compressed to .jsonl.gz, one
+    # file per hourly pass. The copy is checked against the original (bytes, line count,
+    # sha256) before the original is removed; a failed pass leaves the original and tries
+    # again. Everything that reads day files reads both forms.
+    #
+    # Growth, measured on 11 November 2026 by running this service locally:
+    #   curve snapshot   215 KB raw, 31 KB gzipped, one a minute  = 310 MB a day raw, 45 MB gzipped
+    #   pairs cycle      3.9 KB raw, one every 10 seconds         =  34 MB a day raw,  2 MB gzipped
+    #   sports snapshot   65 KB raw, 10 KB gzipped, one a minute  =  94 MB a day raw, 15 MB gzipped
+    # (a pairs cycle stores both books of every pair it priced, so a trade can be priced on a
+    # later cycle; the sports figure is for 48 games listed, with the 14% the ProphetX listings
+    # and the 30% the Crypto.com listings were measured to add, and grows with the slate).
+    # Together about 440 MB a day raw, 62 MB gzipped. Without the gzip step this 3 GB disk would
+    # be full in under 7 days; with it, it holds the current day raw plus about 41 closed days
+    # (about 55 with BTC_CURVE_SPORTS=off). A year is about 23 GB: raise sizeGB to 25 before the
+    # sixth week is out (Render disks only grow).
+    #
+    # Memory, measured on 11 November 2026 in a 512 MB, half CPU group with the full curve
+    # window and a full sports window reloaded from disk, every page opened: see
+    # docs/btc-curve-report.md. The sports page holds 24 hours of snapshots in memory here
+    # (SPORTS_VENUES_WINDOW_HOURS), not the 72 it holds alone; the disk keeps every snapshot.
+    #
+    # The budget: BTC_CURVE_DISK_BUDGET_MB is the size /healthz measures the data against.
+    # Past 80% it says so in plain words under data.warning and so does the start-up log line.
+    # The budget never deletes anything. Keep it equal to the disk size when the disk is raised.
+    #
+    # IMPORTANT for the operator: if BTC_CURVE_RETAIN_DAYS is set to 21 in the Render dashboard
+    # for this service (it was in this file until now), delete it there. A value in the
+    # dashboard overrides the code default, and with it the service still deletes after 21 days.
+    # Check /healthz afterwards: data.retention must read "all".
+    disk:
+      name: btc-curve-data
+      mountPath: /var/data
+      sizeGB: 3
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: BTC_CURVE_DATA_DIR
+        value: /var/data/btc-curve
+      - key: BTC_CURVE_INTERVAL_SEC
+        value: "60"
+      - key: BTC_CURVE_DISK_BUDGET_MB
+        value: "3000"
+      # Optional. A whole number of days keeps that window and deletes older day files.
+      # Leave it out to keep every day.
+      # - key: BTC_CURVE_RETAIN_DAYS
+      #   value: "365"
+      # Optional. When set, the page and JSON are only served with ?k=<token>
+      # (an unlisted link for a reader). Set in the dashboard, not here.
+      # - key: BTC_CURVE_TOKEN
+      #   sync: false
+      # The BTC pairs UI at /pairs runs inside this process (BTC_CURVE_PAIRS=0 turns it off).
+      # Its gap history lives under the curve disk at /var/data/btc-curve/pairs and follows
+      # BTC_CURVE_RETAIN_DAYS unless BTC_PAIRS_RETAIN_DAYS is set (same values, same rule).
+      # - key: BTC_PAIRS_RETAIN_DAYS
+      #   value: "365"
+      # - key: BTC_PAIRS_INTERVAL_SEC
+      #   value: "10"
+      # Optional. The trader's engine endpoint the Launch button sends to by default; he can
+      # also set it on the page itself (kept in his browser). Set in the dashboard.
+      # - key: BTC_PAIRS_LAUNCH_URL
+      #   sync: false
+      # Optional. "send" (default) POSTs the pair as JSON to that URL; "open" opens the URL in
+      # a new tab with the pair in the query string, for an engine that is a screen he drives.
+      # - key: BTC_PAIRS_LAUNCH_MODE
+      #   value: send
+      # Optional. Kalshi event page pattern once confirmed in a browser; {event} is the event
+      # ticker in lower case (kxbtcd-26nov0917). Default is the KXBTCD series page.
+      # - key: BTC_PAIRS_KALSHI_URL
+      #   value: https://kalshi.com/markets/kxbtcd/bitcoin-price-abovebelow/{event}
+      # The sports venues report at /sports runs inside this process, behind the same key
+      # (BTC_CURVE_SPORTS=off turns it off). Its snapshots live under the curve disk at
+      # /var/data/btc-curve/sports and follow BTC_CURVE_RETAIN_DAYS unless
+      # SPORTS_VENUES_RETAIN_DAYS is set (same values, same rule). A sports fault is a line
+      # under sports on /healthz; the BTC pages do not depend on it.
+      # - key: BTC_CURVE_SPORTS
+      #   value: "off"
+      # The page made for one reader at /prospect (Lock in replayed on Crypto.com's real trades:
+      # results only, one address). Its own key, which opens nothing else on this
+      # service; BTC_CURVE_TOKEN does not open it. Unset, shorter than 16 characters, or equal
+      # to BTC_CURVE_TOKEN: the page is off and /healthz says why under sports.audiencePages.
+      # Set in the dashboard (Render's Generate makes a value), not here.
+      # - key: PROSPECT_PAGE_KEY
+      #   sync: false
+      # The company's own Lock in pages at /lockin: every replay table, the method, and the
+      # lock card with its order (/lockin/lock) and the meeting brief (/lockin/brief). Never
+      # given to a reader. Same rules as the key above, and it may not equal that key either
+      # (both pages go off if they match).
+      # - key: LOCK_IN_INTERNAL_KEY
+      #   sync: false
+      # The page made for DraftKings at /draftkings (Lock in replayed on the trades in DKeX's
+      # public daily files: results only, one address). It reads a record that ships with the
+      # code and calls no host. Same rules as the two keys above, and it may not equal either.
+      # - key: DRAFTKINGS_PAGE_KEY
+      #   sync: false
+      # - key: SPORTS_VENUES_INTERVAL_SEC
+      #   value: "60"
+      # Hours of sports snapshots held in memory for the page's window sections. 24 here; do
+      # not raise it without measuring: 72 leaves under 100 MB of this plan's 512 MB.
+      # - key: SPORTS_VENUES_WINDOW_HOURS
+      #   value: "24"
+      # Crypto.com's exchange fee as the sports page counts it: flat (2 cents a contract to open
+      # and 2 to close, the schedule's standard for a broker's customer) or weighted (0.07 x p x
+      # (1 - p), which the schedule allows depending on the broker's connection). Flat when unset.
+      # - key: SPORTS_VENUES_CRYPTOCOM_FEE
+      #   value: "flat"
+
+  - type: web
+    name: atticus-event-demo-cross-venue
+    runtime: node
+    plan: starter
+    region: oregon
+    branch: cursor/tier2-cross-venue-2bfa
+    autoDeploy: true
+    buildCommand: npm ci
+    startCommand: npm --workspace services/api exec tsx scripts/eventProtectXDemoService.ts
+    healthCheckPath: /healthz
+    buildFilter:
+      ignoredPaths:
+        - docs/**
+        - "**/*.md"
+        - services/api/tests/**
+        - .github/**
+        - demo/**
+        - services/api/src/btcCurve/**
+        - services/api/src/sportsVenues/**
+        - services/api/scripts/btc*.ts
+        - services/api/scripts/sportsVenuesReportService.ts
+        - services/api/scripts/eventShadow*.ts
+        - services/api/scripts/memberApp*.ts
+        - services/api/src/onchainVenues/**
+        - services/api/scripts/onchainVenuesService.ts
+        - render-onchain.yaml
+    # Funnel counters and the quote-receipts ledger live on a small disk so a
+    # deploy does not zero them (without it both restart from /tmp, empty).
+    disk:
+      name: event-demo-cross-venue-data
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: NODE_ENV
+        value: production
+      # Gates the operator views: /admin/funnel, /api/admin/*, the partner console and the
+      # operator's fields on /api/showcase and /api/receipts. A script sends it in the
+      # x-admin-token header. A browser signs in at /operator (the token goes in the body of a
+      # form, never in an address) and holds a cookie for EVENT_X_ADMIN_SESSION_HOURS (12).
+      # On a page a visitor also reads, the operator's view is asked for with ?as=operator.
+      - key: EVENT_X_ADMIN_TOKEN
+        generateValue: true
+      - key: EVENT_X_FUNNEL_PATH
+        value: /var/data/event-demo-funnel.json
+      - key: EVENT_X_LEDGER_PATH
+        value: /var/data/cross-quotes.jsonl
+      # Ceiling on protection's cost in bps of expected value; above it the
+      # cheapest route is still rich insurance and the scan refuses honestly
+      # (protection_too_rich). 0 turns the ceiling off.
+      - key: EVENT_X_MAX_EV_COST_BPS
+        value: "300"
+      # Minimum credit a tier must pay to be offered: 25¢ and 0.25% of stake,
+      # whichever is more (38¢ on 150 contracts). Below it the scan refuses
+      # (credit_too_small) rather than offering pennies. Applied in the scan, so
+      # the board, the embed and the shadow record agree.
+      - key: EVENT_X_MIN_CREDIT_CENTS
+        value: "25"
+      - key: EVENT_X_MIN_CREDIT_BPS
+        value: "25"
+      # In play: a game that has started stays on the board and is quoted from the books as
+      # they stand, for EVENT_X_IN_PLAY_HOURS after tip-off (default 4). The row says Live in
+      # place of the tip-off and re-prices while its panel is open. On unless this says 0
+      # (false, no, off). The shadow record's lock path (the other service, same module) reads
+      # the same switch from its own environment and is on by default there too.
+      - key: EVENT_X_IN_PLAY
+        value: "1"
+      # Which hedge venues are offered tonight (kalshi, prophetx, novig, polymarket; comma
+      # separated). A venue left out is not priced, not shown in the Venue view and never sent
+      # to. Unset, every route is offered, which puts Polymarket on the board; the demo shows
+      # Kalshi, ProphetX and Novig.
+      - key: EVENT_HEDGE_VENUES
+        value: "kalshi,prophetx,novig"
+      # Whether the public page names the venues the other side is priced on and routed to,
+      # and the routing partner. Unset (the default), the page says "best of 3 venues", the
+      # Venue view letters them (Venue A, B, C; a host that is itself one of them keeps its
+      # name), the recording's caption and the footer stop naming venues, and the Parlays tab
+      # drops the lock's venue word. Everything is still tracked and named on the ledger, the
+      # receipts and the operator surfaces. Set to "1" to name them on the page again.
+      # - key: EVENT_X_NAME_HEDGE_VENUES
+      #   value: "1"
+      # NOVIG BOOK. The Novig route prices from the venue's own market, read as the signed-dialect
+      # reference book (the same read atticus-event-shadow calls "reference book A"). Without a
+      # host the route is offered but every row reads "not read". The catalog and books are
+      # PUBLIC, so the host alone turns the read on; the key pair is optional and only switches
+      # the reads to the account-scoped paths. Set in the dashboard, never in git; copy the
+      # values from atticus-event-shadow (Render does not share env between services).
+      #   REFERENCE_BOOK_SIGNED_HOST=https://api....   the venue's API host, nothing else needed
+      #   REFERENCE_BOOK_SIGNED_KEY_ID=<key id>          optional, with the PEM
+      #   REFERENCE_BOOK_SIGNED_PRIVATE_KEY_PEM=<PKCS8 PEM>
+      #   REFERENCE_BOOK_SIGNED_LEAGUES=nba=<venue's word>  optional; copy if the shadow sets it
+      # With no REFERENCE_BOOK_SIGNED_HOST the route falls back to VENUE_API_HOST when that is set.
+      - key: REFERENCE_BOOK_SIGNED_HOST
+        sync: false
+      # POLYMARKET US BOOK (the US exchange; a price reference beside each quote, never the route,
+      # no order is sent). Optional here: atticus-event-shadow is where the record is kept. To
+      # have this board read it too, set the same pair in this service's dashboard, never in git:
+      #   POLYMARKET_US_KEY_ID / POLYMARKET_US_SECRET_KEY   live books off the venue's stream
+      #   REFERENCE_BOOK_POLY_US=public                     or: no key, the public copy (up to 30 s old)
+      # Details under POLYMARKET US on atticus-event-shadow below.
+      # Embed demo (/): host names honoured on ?brand=, comma-separated; anything
+      # else renders as EVENT_X_EMBED_BRAND. These names carry a colourway and a
+      # light/dark shell (scripts/eventProtectEmbedHtml.ts BRAND_PRESETS); any
+      # other allowlisted name gets the generic slate palette. Sportsbook presets
+      # hide the crypto strikes (?kind=all shows them). Partner console
+      # (/partner, operator token) shows the host's revenue share at this percent.
+      - key: EVENT_X_BRAND_ALLOWLIST
+        value: "ProphetX,Novig,Sporttrade,Kalshi,Polymarket,DraftKings,FanDuel,PrizePicks,Underdog,Robinhood,Coinbase,Kraken,WagerWire,Wire Markets"
+      # What the front door (/) calls the host when the link carries no ?brand=.
+      - key: EVENT_X_EMBED_BRAND
+        value: "Your Exchange"
+      # A branded shell (?brand=Wire Markets) links its "record" to that venue's slate on
+      # the shadow service, /slate/<slug>?k=<derived key>, instead of the full public
+      # record. The derived key is HMAC(EVENT_SHADOW_SLATE_KEY, slug), so this must be
+      # the SAME value as EVENT_SHADOW_SLATE_KEY on atticus-event-shadow (copy it by
+      # hand in the dashboard; Render does not share generated values across
+      # services). Unset, branded shells fall back to the full public record.
+      - key: EVENT_SHADOW_SLATE_KEY
+        sync: false
+      # Where the public /partner page's "Talk to us" goes.
+      - key: EVENT_X_CONTACT_EMAIL
+        value: "michael@atticustrade.com"
+      - key: EVENT_X_PARTNER_SHARE_PCT
+        value: "50"
+
+  # Shadow run: the cross-venue router quoted continuously, every position
+  # marked against official results as events settle. The persistent disk is
+  # the point: the track record and the lock ledgers must survive deploys.
+  # As committed here every hedge is simulated at the book and nothing is
+  # bought. This is also the one service that is given venue trading keys in
+  # the dashboard and can send real orders once armed: see LIVE HEDGE below
+  # and the header of this file.
+  - type: web
+    name: atticus-event-shadow
+    runtime: node
+    plan: starter
+    region: oregon
+    branch: cursor/tier2-cross-venue-2bfa
+    autoDeploy: true
+    buildCommand: npm ci
+    startCommand: npm --workspace services/api exec tsx scripts/eventShadowWorker.ts
+    healthCheckPath: /healthz
+    buildFilter:
+      ignoredPaths:
+        - docs/**
+        - "**/*.md"
+        - services/api/tests/**
+        - .github/**
+        - demo/**
+        - services/api/src/btcCurve/**
+        - services/api/src/sportsVenues/**
+        - services/api/scripts/btc*.ts
+        - services/api/scripts/sportsVenuesReportService.ts
+        - services/api/src/onchainVenues/**
+        - services/api/scripts/onchainVenuesService.ts
+        - render-onchain.yaml
+    disk:
+      name: event-shadow-ledger
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: EVENT_SHADOW_LEDGER_PATH
+        value: /var/data/event-shadow-ledger.jsonl
+      # LEDGER FINGERPRINTS. On with nothing set here. One SHA-256 per closed UTC day of the ledger,
+      # chained, is recorded once in /var/data/event-shadow-ledger.fingerprints.jsonl (same disk,
+      # a few hundred bytes a day; each lock ledger gets its own file the same way), printed on the
+      # record page and listed at /api/shadow/fingerprints. The ledger is hashed again from its
+      # first byte at start-up and once a day and compared with what was published; a mismatch is
+      # said on the page, on /healthz and by alert, and is never repaired. A fingerprint only binds
+      # once someone outside this disk holds it, so save the list off this box with the nightly
+      # backup. To check a backup: services/api/scripts/eventLedgerFingerprint.ts (its header).
+      # Two knobs, both optional and not set here:
+      #   EVENT_SHADOW_FINGERPRINTS=0              turns it off (no section, no route, no file)
+      #   EVENT_SHADOW_FINGERPRINT_CHECK_MS=<ms>   how often the full check runs (default 86400000)
+      # The shadow scans with the demo's scanner, so the same EV-cost ceiling applies:
+      # rows above it are recorded as protection_too_rich refusals, not opened.
+      - key: EVENT_X_MAX_EV_COST_BPS
+        value: "300"
+      # PINNED EXECUTION. A lock on a ticker armed for live orders is pinned to the venue the
+      # executor can send to (Kalshi's own No side), while the engine still prices both routes.
+      # Unset, the pinned route is judged on its own cost and a lock refuses as too_expensive
+      # whenever Polymarket would have been the cheaper hedge (most NBA nights at small size).
+      # Set to a whole number of cents, the lock stands when the holder's floor, cap and credit on
+      # Kalshi are each within that many cents of the cheaper route's (0 = equal or better): the
+      # holder is offered the same deal they would get anywhere, the ceiling judges the cheaper
+      # route's cost, and the execution premium is ours, disclosed on the operator's quote as
+      # routing.pinnedExecution. Terms worse than the tolerance stay refused.
+      # 5: measured on the Oct 27 Pistons-Knicks game at 15 and 25 contracts, Kalshi's terms sit
+      # 1c under on the cap and 5c under on the credit (Knicks), 5c under on the floor (Pistons);
+      # 4 refuses both, 5 stands both. Premium absorbed: 155 and 280 bps of a $15-$25 stake.
+      - key: EVENT_X_PINNED_TOLERANCE_CENTS
+        value: "5"
+      # Open mix: crypto strikes roll over hourly and would fill the record (3 of 4 opens on the
+      # first book). The product lives on game positions, so crypto is held to a quarter of the
+      # trailing day's opens, with a small allowance so an overnight book with no games still
+      # records something.
+      - key: EVENT_SHADOW_CRYPTO_SHARE_MAX
+        value: "0.25"
+      - key: EVENT_SHADOW_CRYPTO_FLOOR_PER_DAY
+        value: "2"
+      # Early closes: this share of positions leave before the lock, priced as a new trade at
+      # the live books that second (both legs sold into the bids). The record then shows what
+      # leaving early paid against holding, and what crossing the books cost against the mid.
+      # 0 disables. The draw is a hash of the ticker, so a redeploy replays the same schedule.
+      - key: EVENT_SHADOW_EARLY_CLOSE_SHARE_PCT
+        value: "20"
+      # Last leg of a parlay: a second ledger on the same disk. Simulated tickets of 2 to 5
+      # favourites from Polymarket's combo leg catalog (there is no public list of real
+      # tickets), real results and real books. When every earlier leg has hit, the compressed
+      # position on the last leg is priced with the same collar search and the terms are
+      # recorded once; nothing is bought. Defaults: $20 stake, 10-minute tick. EVENT_LASTLEG_ENABLED=0
+      # turns it off. Public: the lock-sell-hold card on the record and /api/shadow/parlays (retail
+      # shape; the demo's Parlays tab reads it). Operator views: /api/shadow/lastleg{,.csv}.
+      - key: EVENT_LASTLEG_LEDGER_PATH
+        value: /var/data/event-shadow-lastleg.jsonl
+      # Ceiling on undecided tickets per size (2, 3, 4 and 5 legs). The default of two kept the
+      # record to eight tickets in play; the Parlays tab is a positions list, so five per size
+      # gives it up to twenty rows across the week's slate while staying under EVENT_LASTLEG_MAX_OPEN.
+      - key: EVENT_LASTLEG_TICKETS_PER_SIZE
+        value: "5"
+      # No game on more than three undecided tickets at once (EVENT_LASTLEG_MAX_PER_GAME, default 3):
+      # the biggest market would otherwise sit on every ticket and one upset would bust the whole board.
+      # Venue slates: the record cut to one venue's leagues with its name on the page, at
+      # /slate/<slug>?k=<EVENT_SHADOW_SLATE_KEY> (and /slate/<slug>.csv). One slate per
+      # semicolon, slug=Name:leagues; an empty league list is every sports league. Reached
+      # only by the share key or the operator token, never linked from the public record, so a
+      # prospect's name appears only on a link we chose to send. Nothing is read from the venue.
+      # A share link says how many hedge venues compete ("the best of 3 venues") and never which;
+      # the operator token reads the names. EVENT_X_NAME_HEDGE_VENUES=1 on this service (the same
+      # switch the demo page has, off by default) names them on share links too.
+      - key: EVENT_SHADOW_SLATES
+        value: "wiremarkets=Wire Markets:nfl,nba,mlb,nhl,epl,ucl,mls;wagerwire=WagerWire:nfl,nba,mlb,nhl;sporttrade=Sporttrade:nfl,nba,mlb,nhl;novig=Novig:nfl,nba,mlb,nhl;draftkings=DraftKings:nfl,nba,mlb,nhl;underdog=Underdog:nfl,nba,mlb,nhl;prophetx=ProphetX:nfl,nba,mlb,nhl,epl,ucl,mls;prizepicks=PrizePicks:nfl,nba,mlb,nhl"
+      - key: EVENT_SHADOW_SLATE_KEY
+        generateValue: true
+      # Where the slate page's "Open the demo" goes (renders in the venue's brand with ?brand=).
+      - key: EVENT_SHADOW_DEMO_URL
+        value: https://atticus-event-demo-cross-venue.onrender.com
+      # Gates the operator views: /report, /api/shadow/report, /api/shadow/hedges,
+      # /api/shadow/lastleg, /api/shadow/export and the full positions CSV.
+      # Fail-closed: without it those routes answer 403 and the public record stays up.
+      # THE OPERATOR'S SIGN-IN (operatorSession.ts): the token stays out of addresses.
+      #   A script sends it in the x-admin-token header (or Authorization: Bearer).
+      #   A browser signs in at /operator: the token goes in the body of a form, and the browser
+      #   then holds a cookie (HttpOnly, 12 hours; EVENT_X_ADMIN_SESSION_HOURS, 1 to 720) that no
+      #   script can read. Replacing this token ends every sign-in. No page carries the token on
+      #   a link. On a route the public also reads (/healthz, /scoreboard, a slate), the
+      #   operator's view is asked for with ?as=operator, so a signed-in operator who opens a
+      #   public page sees the public page.
+      #   The cookie writes only from this service's own pages: a link in a message, or an
+      #   address typed into the address bar, cannot change anything with it. The signed-in page
+      #   at /operator has a box that opens an address from the page, for the writing GETs.
+      #   An old link with ?token= still opens: a page signs the browser in and is sent on
+      #   without it; a JSON route reads it as before. Add EVENT_X_ADMIN_QUERY_TOKEN=off (not
+      #   set here) to stop a token in an address being read at all, once nothing you use
+      #   sends one.
+      - key: EVENT_X_ADMIN_TOKEN
+        generateValue: true
+      # Polymarket Builders Program attribution. This is the PUBLIC bytes32 Builder Code
+      # (0x + 64 hex) from polymarket.com/settings?tab=builder, attached as `builderCode`
+      # to every Polymarket order we place. Not the Builder API key: that is a UUID, is a
+      # secret, is never put on an order, and is refused here with a healthz note if pasted
+      # by mistake. The shadow (book mode) sends no orders, so this only takes effect once
+      # EVENT_HEDGE_STRATEGY=rfq and POLY_* credentials are set. Public value, safe in git.
+      - key: POLYMARKET_BUILDER_CODE
+        value: "0x7c25351b760a956a2617e4574ba775190a0483944143b8f14e40733d1f5eff16"
+      # LIVE HEDGE (off here; set in the dashboard for the live-order demo, never in git):
+      #   EVENT_HEDGE_STRATEGY=live             real Kalshi orders behind rails; anything the
+      #                                         rails hold is simulated at the book, reason on the receipt
+      #   KALSHI_API_KEY_ID / KALSHI_PRIVATE_KEY_PEM   service env only; the extension never sees them
+      #   EVENT_HEDGE_LIVE_TICKERS=KX...,KX...  allowlist; empty allows nothing
+      #   EVENT_HEDGE_LIVE_MAX_CONTRACTS_PER_ORDER=25 / EVENT_HEDGE_LIVE_MAX_CONTRACTS_PER_DAY=100
+      #   EVENT_HEDGE_LIVE_SEND=yes             the only value that sends; anything else is a dry run
+      #   EVENT_HEDGE_KILL_SWITCH=1             no hedge order leaves, whatever else is set. It stands
+      #                                         in front of every strategy: under rfq no request is
+      #                                         sent and no quote can be accepted. It does not reach
+      #                                         a member's own sale (MEMBER_APP_*) or the operator's
+      #                                         Kalshi account routes; the runbook's pause steps do.
+      #   EVENT_HEDGE_LIVE_VIA=aggregator       the order goes through the aggregator's execution pod
+      #                                         instead of our own Kalshi key: the pod holds a numbered
+      #                                         Kalshi subaccount of ours, we sign with a TRADE key bound
+      #                                         to that pod, and the hedge is on the partner's books as
+      #                                         well as the venue's. Same rails, same dry run; the fill
+      #                                         says via "aggregator". Default: direct.
+      #   AGGREGATOR_TRADE_KEY_ID / AGGREGATOR_TRADE_PRIVATE_KEY_HEX   the TRADE key (not the DATA key below);
+      #                                         generated in the partner's portal, private half here only
+      # HEDGE FIRST (hedgeFirst.ts): when every setting above lets an order leave (live, the ticker
+      #   armed, SEND=yes, no kill switch, a key for the venue), a tap buys the hedge BEFORE the lock is
+      #   written, all or none. The whole hedge fills: the lock is written at the quoted terms. Nothing
+      #   fills, or a cap holds the order: no lock, the holder is told to try again. A part fill or an
+      #   order that errored after it left: no lock, and the alert sink is paged (kind hedge_stray) to
+      #   look on the venue. Every attempt is two lines in lock-pending.jsonl beside the lock ledger
+      #   (EVENT_SHADOW_LOCK_PENDING_PATH to move it). In a dry run nothing changes: the record is
+      #   written and the fill is simulated at the book, as before.
+      #   Operator: GET /api/shadow/lock/pending is the trail (attempts by ending, open lines, strays);
+      #   POST /api/shadow/lock/pending/clear?id=...&note=... marks one checked. the operator's /healthz carries
+      #   lock.hedgeFirst: `unresolved` and `strays` must both read empty.
+      # REAL-ONLY HOLDERS (realOnlyHolders.ts): the holders whose lock must have a real hedge behind
+      #   it, or not exist. For a holder named here, a tap where the order would not truly leave
+      #   (not live, kill switch, dry run, no key for the venue, game not armed) is refused in plain
+      #   words and nothing is written; the quote there says Lock in is not open; leaving a lock that
+      #   holds a real hedge needs a real sale of it. Everyone not named keeps the paper path above.
+      #   EVENT_SHADOW_REAL_ONLY_HOLDERS=ann,bob   holder aliases from EVENT_SHADOW_HOLDER_KEYS
+      #   EVENT_SHADOW_REAL_ONLY_HOLDERS=*         every caller: each holder, the shared key, the operator
+      #   Default: unset, nobody. An entry that is not an alias and not * is read as * (the safe
+      #   side) with a note in /healthz. Adding a person outside the company is two settings and no
+      #   code: their key in EVENT_SHADOW_HOLDER_KEYS, their alias here. the operator's /healthz carries
+      #   lock.realOnly: who is named, the holders with a key who are not, and the refusals so far.
+      # USER TERMS (termsAcceptance.ts): the version of the user terms in force, and each holder's
+      #   acceptance of it on the record. Both settings, or neither:
+      #   EVENT_SHADOW_TERMS_VERSION=2026-11-20        the label printed on the document
+      #   EVENT_SHADOW_TERMS_URL=https://...           where that version can be read (https only)
+      #   Default: both unset, no terms in force, nobody is asked. With both set, a named holder (own
+      #   key, hosted-page member, or the operator acting for a holder) with no acceptance of that
+      #   version is refused at the quote and at the tap, with the link; they accept with one tap.
+      #   The shared key and the operator acting for nobody are not asked. One set without the
+      #   other, or one that cannot be read, refuses every named holder until corrected (a note in
+      #   /healthz says which). Acceptances are lines in terms-acceptances.jsonl beside the lock
+      #   ledger (EVENT_SHADOW_TERMS_PATH to move it). the operator's /healthz carries lock.terms: the
+      #   version, who has not accepted, the refusals so far.
+      # EXPOSURE CAPS (exposureCaps.ts): how much real money may be open at once. Read from the
+      #   ledgers at each real-money lock, before the hedge order is built; a lock that would pass
+      #   any of the three is refused with the cap and the amount, on one line in lock-pending.jsonl
+      #   (type cap_refused). Simulated locks are not measured and not refused. Values are whole
+      #   cents. Unset is the default below, never "no cap". The word `none` is the only way to
+      #   say no cap, and /healthz then reads "no cap". Anything else that is not a whole number
+      #   is the default, with a note in /healthz.
+      #   EVENT_HEDGE_LIVE_MAX_OPEN_CENTS_PER_GAME=5000      default $50. Per game, both sides and
+      #                                         every holder together: floors owed if the side loses,
+      #                                         plus credits, plus what the hedges cost.
+      #   EVENT_HEDGE_LIVE_MAX_OPEN_CENTS_PER_VENUE=10000    default $100. Per hedge venue: what the
+      #                                         unsettled hedges bought there cost (cash resting there).
+      #   EVENT_HEDGE_LIVE_MAX_OPEN_CENTS_PER_VENUE_KALSHI   optional, one venue's own cap in place of
+      #   ..._PER_VENUE_NOVIG / _PROPHETX / _POLYMARKET      the one above (a new exchange capped lower).
+      #                                         Default: unset, the venue takes the cap above.
+      #   EVENT_HEDGE_LIVE_MAX_OPEN_CENTS_PER_HOLDER=5000    default $50. Per holder key: for each
+      #                                         open lock the larger of what we can owe them (floor
+      #                                         plus unpaid credit) and what they can owe us (the
+      #                                         slice above the cap, handed back if their side wins).
+      #   The defaults are sized for $5 to $20 positions: about $5 to $25 on the game per lock.
+      #   Operator: /healthz carries `exposure`: per game (the largest five), per venue and
+      #   per holder, open now, the cap and the room left, and the refusals so far.
+      #   The caps also stand in front of EVENT_HEDGE_STRATEGY=rfq when it holds a venue key: that
+      #   strategy can accept a real quote; its only other rail is the kill switch (no order caps).
+      # PILOT CHECK (pilotCheck.ts), operator: GET /pilot-check (a page) and
+      #   GET /api/shadow/pilot-check (JSON). What must be true before a person outside the
+      #   company holds a real-money lock, each answered yes, no, or "cannot be checked from here"
+      #   with what to confirm by hand, and one line: ready for an outside holder, yes or no. It
+      #   reads settings and files; it changes nothing and gates nothing.
+      #   EVENT_SHADOW_DISK_MOUNT=/var/data     optional; where the persistent disk is mounted, for
+      #                                         the check's ledger question. Default /var/data, the
+      #                                         mountPath of this service's disk.
+      # REAL FILLS (realizedBook.ts, realizedRecon.ts): the real orders above are kept as their own
+      #   book, replayed from hedge-receipts.jsonl, lock-pending.jsonl and the lock ledgers. A line
+      #   counts as a real fill only when the executor marked it filled at a venue (fill.simulated
+      #   false); an order that errored after it left is listed as not counted, never guessed.
+      #   Operator: GET /api/shadow/realized is the book (per lock, per UTC day, per venue) and the
+      #   kept daily checks; add ?day=YYYY-MM-DD to check that UTC day against the venues now (read
+      #   only, not kept). POST /api/shadow/realized/check?day=YYYY-MM-DD checks a day that has ended
+      #   and keeps it. GET /api/shadow/realized.csv (?month=YYYY-MM) is the monthly accounting export.
+      #   THE DAILY CHECK: half an hour past midnight UTC the day that ended is compared, our ledger's
+      #   real fills against each venue's own, once; one line is appended to realized-recon.jsonl
+      #   beside the lock ledger. Each venue reads agrees, differs, or could not be checked with the
+      #   reason. A venue that differs is paged (kind venue_fills_differ). the operator's /healthz carries
+      #   realized.dailyCheck: `lastRun` and `lastDiffers`. The venues are read with the keys already
+      #   set, signed GETs only; nothing is placed or moved:
+      #     Kalshi     KALSHI_API_KEY_ID / KALSHI_PRIVATE_KEY_PEM: the account's own list of the day's
+      #                fills, which also covers the orders the aggregator's pod sent into our
+      #                subaccount. The key must be able to read the portfolio and must not be locked
+      #                to another subaccount. With only the aggregator's TRADE key set, each order
+      #                our ledger names is read back from the aggregator instead.
+      #     ProphetX   AGGREGATOR_TRADE_KEY_ID / AGGREGATOR_TRADE_PRIVATE_KEY_HEX: the fills of each
+      #                order our ledger names (that surface has no list of the day).
+      #     Novig      NOVIG_TRADE_KEY_ID / NOVIG_TRADE_PRIVATE_KEY_PEM: the key's own list of the day.
+      #     No key for a venue: "could not be checked: no key for <venue>". Never "agrees".
+      #   EVENT_REALIZED_RECON_DAILY=0          optional; turns the timer off (the routes stay)
+      #   EVENT_REALIZED_RECON_AFTER_MINUTES=30 optional; how long past midnight UTC the timer waits
+      #   EVENT_REALIZED_RECON_PATH=...         optional; moves realized-recon.jsonl
+      #   EVENT_RECON_KALSHI_SUBACCOUNTS=0,1    optional; the Kalshi subaccounts to list. Unset: every
+      #                                         subaccount the key sees, so a trade made by hand in
+      #                                         the same account shows as at the venue and not on
+      #                                         our ledger. Name ours to leave the others out.
+      #   The record page shows a Real fills card once there is a real fill: counts and cash, no
+      #   venue named, our result only when every figure in it is on the record.
+      # IN PLAY (lockWindow.ts): a game can be locked in from seven days out, through the last 45
+      #   minutes and while it is being played. On by default.
+      #   EVENT_X_IN_PLAY=0                     optional; turns it off (0, false, no, off): the lock path
+      #                                         closes 45 minutes before the start, as it did before.
+      #   EVENT_X_IN_PLAY_HOURS=4               optional; how long after the start a game stays open.
+      #   EVENT_SHADOW_SCAN_IN_PLAY=1           optional, off by default: lets the automatic paper scan
+      #                                         open records on games under way. Left off so the public
+      #                                         record is not flattered by paper fills at a moving book.
+      #   During a game the book moves between the read and the order. With real orders on, HEDGE
+      #   FIRST is what makes that safe: a moved book fills nothing and locks nothing. In a dry run
+      #   an in-play lock is a paper record at the book as read. A hedged lock cannot be left early
+      #   once the game has started (the leave window still closes before the start); it settles.
+      # Pre-flight (operator): GET /api/shadow/hedges/preflight?ticker=KX... reads balance and the rails
+      #   (via aggregator: the pod's identity, its Kalshi cash and whether the key may trade).
+      # The pod (operator): GET /api/shadow/hedges/pod reads the aggregator's side — pod, cash, positions,
+      #   and every receipt on our trail that went that way. ?ticker= narrows the positions.
+      # KALSHI ACCOUNT (operator; needs KALSHI_API_KEY_ID / KALSHI_PRIVATE_KEY_PEM, in any strategy):
+      #   GET /api/shadow/kalshi/account                  API tier and grants, cash per shard, subaccounts per shard, the API keys, what to do next
+      #   GET /api/shadow/kalshi/keys                     the API keys: id, name, which subaccount each is locked to, which one is ours
+      #   Writes are a POST with a JSON body, or, from a browser signed in at /operator and opened from the box on that page, a GET with confirm=yes and the fields in the query:
+      #     /api/shadow/kalshi/account/upgrade?confirm=yes                      the permanent Advanced grant (Kalshi wants one API-created order among the last 100)
+      #     /api/shadow/kalshi/subaccounts?confirm=yes&shard=0                  the next numbered subaccount on that shard (again with shard=3 for basketball)
+      #     /api/shadow/kalshi/subaccounts/transfer?confirm=yes&from=0&to=1&cents=5000&shard=0     cash between subaccounts, one shard
+      #     /api/shadow/kalshi/shards/transfer?confirm=yes&fromShard=0&toShard=3&cents=5000       the primary's cash across shards
+      #     /api/shadow/kalshi/keys?confirm=yes&name=parlayx-pod&subaccount=1  mint a key restricted to that subaccount (omit subaccount for an
+      #                                                                        unrestricted key; keyType=ed25519 optional). The private key is in
+      #                                                                        that one answer and nowhere else: hand it to the pod at once.
+      #     /api/shadow/kalshi/keys/delete?confirm=yes&id=…                     revoke a key (refuses the key this service signs with)
+      #   Shards: Kalshi holds a subaccount's cash per matching engine; NFL is shard 0, basketball/baseball/
+      #   tennis shard 3; a subaccount that hedges both needs cash on both. Nothing here places an order.
+      # Resend (operator): POST /api/shadow/hedges/resend?ticker=KX... hedges an open lock again when
+      #   its hedge never reached the venue (simulated fill on the trail); refuses once a live fill
+      #   exists unless &force=1. Orders go to Kalshi's V2 path (POST /portfolio/events/orders).
+      # Lock reset (operator): POST /api/shadow/lock/reset?ticker=KX... moves one lock's lines to an
+      #   archive beside the lock ledger so the market can be locked again; names the live fills the
+      #   venue still holds for the old lock. The holder's receipt: GET /api/shadow/receipt?ticker= (lock key).
+      # LOCK IN (the tap from the browser extension; off here, set in the dashboard, never in git):
+      #   EVENT_SHADOW_LOCK_KEY=<12+ chars>     opens GET /api/shadow/markets, GET /api/shadow/quote,
+      #                                         GET /api/shadow/positions and POST /api/shadow/lock to
+      #                                         callers sending x-lock-key.
+      #                                         Unset: those routes answer 404 to anyone but the operator.
+      #   Locks are written to their own ledger beside the scan's (lock-ledger.jsonl on the same
+      #   disk; EVENT_SHADOW_LOCK_LEDGER_PATH to move it), so a holder may lock a market the scan
+      #   already shows. Same settlement; never early-closed. Operator export: /api/shadow/export?ledger=lock
+      #   Tickers on EVENT_HEDGE_LIVE_TICKERS are hedged on Kalshi's own No side and skipped by the scan.
+      # HOLDER POSITIONS (optional; confirms what the holder has at the venue so the extension does not
+      # have to read sizes off the page). Two venue APIs are spoken; the variables set pick one. Set in
+      # the dashboard, never in git. Unset: /api/shadow/positions answers configured:false and the
+      # extension reads the row from the page.
+      # Bearer venue (partner API, session login; the venue issues the pair at Settings > Token. It is an
+      # account key pair, so it could trade: dedicated pair, service env only, revoke after the recording.
+      # The service only logs in and reads open plays, tournaments, events, markets):
+      #   VENUE_API_HOST=https://cash.api..../partner   the partner API base, with the /partner path
+      #   VENUE_API_ACCESS_KEY=<access key>
+      #   VENUE_API_SECRET_KEY=<secret key>
+      # Signed venue (read-only key minted with scripts/venueReadKey.ts; lists positions, nothing else):
+      #   VENUE_API_HOST=https://api....         the venue's API host (paper host for a rehearsal)
+      #   VENUE_API_KEY_ID=<key id>              the read key's id
+      #   VENUE_API_PRIVATE_KEY_PEM=<PKCS8 PEM>   the read key's private key; "\n" escapes accepted
+      # Both:
+      #   EVENT_SHADOW_POSITIONS_TTL_MS=20000    how long one read is reused
+      # MEMBER APP (optional; the one-market-per-outcome venue's OAuth app, so a MEMBER of that venue
+      # can connect their own account and lock in as their own partial sale into its book, in their
+      # own account: nothing hedged, no credit, no take, no capital of ours. The member's surface is
+      # the service's own hosted page, GET /app (the venue's skin, the demo's Lock in line; nothing to
+      # install): its session is a cookie the service sets (HttpOnly, SameSite=Lax, Secure behind
+      # https, 180 days) and the member's holder alias is a hash of it, m-<16 hex>, so no secret is
+      # in a ledger file name. Cookie callers are a member-only lane: positions never read our own
+      # venue keys, quote/lock refuse any venue but this one (403 member_only), POSTs need the page's
+      # x-member-app: 1 header. The extension's STX card is the optional second surface. Neither holds
+      # a token; the service does, sealed. Register a Web app at the venue's developer portal with the
+      # callback below and the service's egress IP on the app's allow-list for the write scope. Set in
+      # the dashboard, never in git. Unset: the member routes answer 404 member_app_off, /app says the
+      # service is not set up for it, and the extension's STX card says the same. Needs
+      # EVENT_SHADOW_LOCK_KEY.)
+      #   MEMBER_APP_HOST=https://demo....       the venue's API host (also its authorize and token host)
+      #   MEMBER_APP_CLIENT_ID=<app client id>
+      #   MEMBER_APP_CLIENT_SECRET=<app client secret>   client_secret_basic on the token exchange
+      #   MEMBER_APP_TOKEN_KEY=<32 bytes, 64 hex or base64>  seals the members' tokens on disk (AES-GCM);
+      #                                         lose it and every member connects again, nothing else
+      #   MEMBER_APP_REDIRECT_URI=...            optional; default RECORD_URL + /api/shadow/member/callback,
+      #                                         which must be the callback registered on the app, exactly
+      #   MEMBER_APP_TOKENS_PATH=...             optional; default member-tokens.json beside the lock ledger
+      #   MEMBER_APP_SCOPES=...                  optional; default "profile.read balance.read portfolio.read orders.read orders.write"
+      #                                         (balance.read must be ticked on the app's registration; a member who
+      #                                         connected before it was asked sees "Reconnect to show it" on the page)
+      #   MEMBER_APP_VENUE_URL=https://...       optional; the venue's web app (e.g. https://demo.stxapp.io): the page's
+      #                                         Back to STX pill, the venue mark's link, and the Games tab's Buy on STX
+      #                                         links to <url>/events/<event_id> (unset: no links, the rows still show)
+      #   MEMBER_APP_HOSTNAME=stx.earnandprotect.xyz
+      #                                         optional; the page's own host, a custom domain on this same service
+      #                                         (Render: Settings → Custom Domains → add it; a CNAME at the registrar to
+      #                                         the service's onrender host; Render issues the certificate). On that host
+      #                                         / is the page, /app/* and /api/* answer as always, and every other path
+      #                                         (the record, the embed, the operator views) is sent to RECORD_URL, so
+      #                                         nothing venue-neutral is served under a venue's name. The venue sees the
+      #                                         same callback either way (it is RECORD_URL's), so nothing changes on the
+      #                                         app registration. Unset: the page lives at RECORD_URL/app only.
+      #   MEMBER_APP_CONTACT=you@example.com     optional; named on the privacy page (/privacy on the page's host,
+      #                                         /app/privacy anywhere) as who to write to for removal; the page
+      #                                         is what the venue's app registration asks for as the privacy URL
+      #   MEMBER_APP_ORDER_WAIT_MS=3000          optional; how long a member's limit order rests before
+      #                                         the rest is cancelled and the record written from the fills
+      #   MEMBER_APP_IN_PLAY=0                   optional; on by default. On: a member may lock while the
+      #                                         game is on and the pre-game cutoff does not apply; the
+      #                                         order rests the market's in_play_delay_sec longer so it
+      #                                         outlives the venue's hold. 0 makes the page pre-game only.
+      #   MEMBER_APP_COMBO_RFQ=auto              optional; auto is the default (unset is auto). A member's
+      #                                         combo (parlay) ticket is quoted and partly sold through
+      #                                         the venue's request-for-quote at ANY leg, not only the
+      #                                         last, wherever the venue quotes. Auto finds out for
+      #                                         itself: when a member holds a live combo the service asks
+      #                                         the venue's quote path for a bid on it, in the background.
+      #                                         A well-formed answer turns the combo rows on for everyone;
+      #                                         a 404 (the venue has not shipped the path, as today)
+      #                                         leaves them riding to settlement and is asked again half
+      #                                         an hour later. Nothing to switch on the day it ships.
+      #                                         No leave early on a combo; the record settles on the
+      #                                         venue's own word for the combo market. The path's shape
+      #                                         in memberApp.ts is still ASSUMED: if the venue ships it
+      #                                         with other field names the rows stay off until the client
+      #                                         is fitted, and the accept is proven only by the first
+      #                                         tap. Before real money: one combo on the venue's paper
+      #                                         exchange, and the three open questions in
+      #                                         demo/event-lockin-extension/README.md (Combos) answered.
+      #                                         Status: the operator's /healthz, lock.member.comboRfq (mode, live,
+      #                                         path, checkedAt, why).
+      #                                         =1 forces it on without asking; =0 forces it off.
+      #                                         =preview: the combo rows quote from a stand-in bid, said
+      #                                         to be a preview on the page, nothing asked of the venue,
+      #                                         the tap refused in words (combo_preview); for seeing the
+      #                                         flow on the deployed page before the venue quotes
+      #   MEMBER_APP_COMPARE_WAIT_MS=4000        optional; the bound on the background comparison priced
+      #                                         on the hedge routes beside the member's sale (0 turns it
+      #                                         off); priced, nothing sent, written as memberSale.compared
+      #   The competition map is REFERENCE_BOOK_OUTCOME_COMPETITIONS (shared with the reference read).
+      # Operator (admin token): GET /api/shadow/member/raw?holder=<alias> is one member's venue account as the
+      #   wire gives it (positions unfiltered, the markets for their ids and which were missing, probes of
+      #   paths the docs do not settle, the listing books), for fitting the reader to the real venue.
+      # Routes (lock key, or the page's cookie): GET /app (the hosted page; sets the cookie once;
+      #   /app/stx.png, bird.png, atticus.png, icon-*.png and manifest.webmanifest are its files),
+      #   GET /api/shadow/member (state: connected, handle, avatarUrl, scope),
+      #   GET /api/shadow/member/account (handle, avatar, balance in cents, balanceScope; ?fresh=1),
+      #   GET /api/shadow/member/games (protectable games the venue lists, joined by club and date,
+      #   with the venue's market and event id, best bid, the Max floor keep, held; the competition
+      #   catalogue is shared and kept 45 s), GET /api/shadow/member/history (every lock, newest first),
+      #   GET /api/shadow/member/connect (the authorize URL to open),
+      #   GET /api/shadow/member/callback (keyless; the venue's redirect, one-time state; a page
+      #   member is sent back to /app?connected=1 or /app?error=...),
+      #   POST /api/shadow/member/disconnect (revokes). /api/shadow/positions lists the member's longs
+      #   with venue:"stx" (the protectable ones with their ticker; the rest with a reason: parlay,
+      #   market_not_covered, league_not_covered, no_protectable_market) and cutoffMinutes;
+      #   /api/shadow/quote?venue=stx prices the three tiers from the
+      #   member's own bid depth; /api/shadow/lock on that venue is one limit sell to its fills;
+      #   /api/shadow/unwind buys the contracts back. Status: healthz lock.member, never a token.
+      # REFERENCE BOOKS (optional; other regulated US exchanges listing the same games, read on every
+      # sports open so the record carries what the default tier would have cost hedged there. Price
+      # reference only: never picks the route, never changes the quote, nothing is filled. The public
+      # page calls them "reference book A" (signed API) and "reference book B" (partner API); the
+      # record carries the dialect ids signed_v3 and partner_mm, never a venue name. Set in the
+      # dashboard, never in git. Unset: no reference is read. Either may be set alone.
+      # Signed venue. Its catalog and books are PUBLIC, so the host alone turns the reference on
+      # (unsigned reads of /v3/public/catalog); the key is optional and only switches the reads to
+      # the signed, account-scoped paths:
+      #   REFERENCE_BOOK_SIGNED_HOST=https://api....   the venue's API host, nothing else needed
+      #   REFERENCE_BOOK_SIGNED_KEY_ID=<key id>          optional, with the PEM
+      #   REFERENCE_BOOK_SIGNED_PRIVATE_KEY_PEM=<PKCS8 PEM>
+      #   A key the venue's account-scoped catalog refuses (423 ACCOUNT_LOCKED, 401, 403) is not
+      #   fatal: catalog and book reads fall back to the public catalog for one cache window and
+      #   /api/shadow/venues/catalog says so in `note`. Positions have no public path.
+      #   REFERENCE_BOOK_SIGNED_LEAGUES=nba=<venue's word>  optional; a league the venue files under
+      #     another word (read it off /api/shadow/venues/catalog?league=nba, leaguesSeen). Unset, a
+      #     league that lists nothing under our code is searched once more on the unfiltered page.
+      # Partner venue (same account key pair kind as above; only login, tournaments, events and
+      # markets are read; dedicated pair, revoke when done):
+      #   REFERENCE_BOOK_BEARER_HOST=https://cash.api..../partner
+      #   REFERENCE_BOOK_BEARER_ACCESS_KEY=<access key>
+      #   REFERENCE_BOOK_BEARER_SECRET_KEY=<secret key>
+      # One-market-per-outcome venue (dialect id outcome_v1, public word "reference book D"; only
+      # GET /api/v1/markets is read; it publishes nothing unauthenticated, so the host alone is a
+      # note). Its demo exchange is a paper book with no money on it: point the host there until
+      # its US production host opens. EITHER a read-only signed key (Ed25519; mint it under the
+      # account's API keys with read scope only) OR an app registered for market data:
+      #   REFERENCE_BOOK_OUTCOME_HOST=https://demo....          the venue's API host
+      #   REFERENCE_BOOK_OUTCOME_KEY_ID=<key id>                 with the PEM
+      #   REFERENCE_BOOK_OUTCOME_PRIVATE_KEY_PEM=<PKCS8 PEM>     "\n" escapes accepted
+      #   REFERENCE_BOOK_OUTCOME_CLIENT_ID=<app client id>       or: with the secret; token fetched
+      #   REFERENCE_BOOK_OUTCOME_CLIENT_SECRET=<app client secret>   and reused for its hour
+      #   REFERENCE_BOOK_OUTCOME_COMPETITIONS=nba=NBA             optional; a league the venue files
+      #     under another competition code (read it off /api/shadow/venues/catalog?league=nba)
+      #   REFERENCE_BOOK_OUTCOME_MAX_PAGES=10                     optional; pages of 200 per competition
+      #     read. The venue lists 60+ markets a game, so a full NFL week passes 1,000; the catalog
+      #     probe's note says when the cap stopped a list short.
+      # POLYMARKET US (dialect id long_short_v1, public word "reference book E"; operator column
+      # "Polymarket US"). The US exchange, not the international one the `polymarket` hedge route
+      # sends to. One market a game with a long side and a short side; its taker fee is folded
+      # into every price. Set both in the dashboard (Environment → Add Environment Variable),
+      # never in git, never in a chat:
+      #   POLYMARKET_US_KEY_ID=<key id>            from the venue's developer portal
+      #   POLYMARKET_US_SECRET_KEY=<secret key>    shown once beside the key id; base64
+      #   With the pair set, each game's book comes off the venue's LIVE stream (one signed
+      #   connection; the book as it stands, at no cost against the rate limit) and the account's
+      #   cash can be read. Without it (REFERENCE_BOOK_POLY_US=public) the book is the venue's
+      #   public REST copy: up to 30 seconds old (its age is on every read), and the venue allows
+      #   one address about ten reads in ten seconds, so on a full slate each game's book is
+      #   refreshed every minute or two. Good enough to compare prices before a game on a short
+      #   list; not for one under way.
+      #   REFERENCE_BOOK_POLY_US=0                 optional; turns the venue off whatever else is set
+      #   POLYMARKET_US_STREAM=0                   optional; keeps the key for the account, books over REST only
+      #   Check after adding (operator): GET /api/shadow/polymarket-us/preflight says in
+      #   words whether the key was accepted, the cash, and whether the books are live.
+      #   NOTHING HERE SENDS AN ORDER to this venue. It is a price reference: read on every sports
+      #   quote, recorded, never the route. Hedging there is a later change (its settlement rule
+      #   table per league, its order signer, one verified fill). The key can trade, so: a
+      #   dedicated key for this service, and never on atticus-btc-curve.
+      # Status: the operator state's hedge.referenceBooks lists which are configured, never the keys.
+      # AGGREGATOR FEED (optional; the cross-venue data partner's signed API and orderbook stream).
+      # With the key set, every sports quote reads its books from the feed FIRST: the opposing
+      # outcome on the second venue, our own market's No side, and the same outcome on the venues
+      # this service has no direct read for (kept as "reference book B (via the aggregator)" /
+      # "reference book C (via the aggregator)", ids aggregated_mm / aggregated_other). Whatever
+      # the feed cannot supply for a pair is read from the venue directly, as before; a mapping
+      # that disagrees with ours is never priced from. A DATA key is all this needs (it refuses
+      # venue paths); the TRADE key that sends orders is AGGREGATOR_TRADE_* under LIVE HEDGE above.
+      # Set in the dashboard, never in git. Unset: the venues are read directly, nothing changes.
+      #   AGGREGATOR_KEY_ID=<key id>
+      #   AGGREGATOR_PRIVATE_KEY_HEX=<64 hex seed, or a PKCS8 PEM>
+      #   AGGREGATOR_API_HOST / AGGREGATOR_STREAM_URL   optional; default to the partner's hosts
+      # Status: hedge.pricingSource (configured, reads, readsWithBooks, mappingMismatches, lastError), never the key.
+      # REFERENCE PRINTS (optional; a regulated US exchange that publishes no live book, only every
+      # trade it matched the day before, in the CFTC's public reporting format, as a public file).
+      # On every sports open the record keeps the opposing side's last print there, its size and
+      # its age, beside the price the live hedge paid. Never priced as a route (a day-old print is
+      # nothing a hedge could have been filled at), never touches the quote. The public page calls
+      # it "reference prints C"; the record carries the id public_prints, never a venue name. No
+      # credentials: the host alone turns it on. Unset: nothing is read.
+      #   REFERENCE_PRINTS_HOST=https://cftc-public-reports....   the origin that serves /reporting/trade_data_YYYY-MM-DD.json.gz
+      # Status: the operator state's hedge.referencePrints says whether it is on.
+
+  - type: web
+    name: atticus-pm-clob-egress-proxy
+    runtime: node
+    plan: starter
+    region: oregon
+    branch: cursor/tier2-cross-venue-2bfa
+    autoDeploy: true
+    buildCommand: npm ci
+    startCommand: npm --workspace services/api exec tsx scripts/eventEgressProxy.ts
+    healthCheckPath: /healthz
+    buildFilter:
+      ignoredPaths:
+        - docs/**
+        - "**/*.md"
+        - services/api/tests/**
+        - .github/**
+        - demo/**
+        - services/api/src/**
+        - services/api/scripts/btc*.ts
+        - services/api/scripts/sportsVenuesReportService.ts
+        - services/api/scripts/eventProtect*.ts
+        - services/api/scripts/eventShadow*.ts
+        - services/api/scripts/memberApp*.ts
+        - services/api/scripts/onchainVenuesService.ts
+        - render-onchain.yaml
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: UPSTREAM
+        value: https://clob.polymarket.com
+      - key: ALLOWED_PREFIXES
+        value: /book
+      # URL token — the only gate on the relay. Copy its generated value into the
+      # operator machine's PM_CLOB_REST_BASE. Rotate by editing here.
+      - key: PROXY_TOKEN
+        generateValue: true

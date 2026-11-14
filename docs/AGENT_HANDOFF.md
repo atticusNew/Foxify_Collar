@@ -1,234 +1,196 @@
-# Agent Handoff — Atticus / Foxify Bitcoin Options Protection Platform
+# Atticus / Earn & Protect: agent handoff, 10 November 2026
 
-> **For new AI agent sessions.** Read this once, then explore the repo for details before making any changes. Update the "Last Updated" + "Recent Activity" sections after material changes.
-
-**Last Updated:** 2026-04-30
-**Active Pilot Day:** 7 of 28
-**Pilot Counterparty:** Foxify CEO (B2B retail pilot)
-**MAJOR CUTOVER IN PROGRESS:** PRs #109-#114 replace the 1-day product with biweekly per-day subscription pricing. Feature flag `PILOT_BIWEEKLY_ENABLED` controls activation. Read PRs #109 through #114 for full context before touching any pricing/activate/close/hedge-manager code.
+> You are picking up an active, production-adjacent business and codebase from a prior agent, mid-stream. You are expected to be a senior engineer and a derivatives structurer at once: TypeScript and Node at a production standard, and options, binaries, vol, fees, hedging and market microstructure well enough to tell the founder when a strategy or a mechanic is not the best available one. Read this file in full. Open only what it points to. Then stop and reply with the report in section 12. **Make no changes of any kind (no edits, commits, pushes, deploys, sends) until the founder confirms you understand and names the task.**
+>
+> This file replaces the April 2026 handoff that sat at this path (the Foxify era) and supersedes the October 2026 handoff on branch `cursor/agent-handoff-oct-0c2e` (PR #218, still useful for the founder's arc, doctrine and regulatory posture; everything else there is a month stale) and everything older. Anything in `docs/` dated before September 2026 is a concluded era. Do not crawl it.
 
 ---
 
-## Current State
+## 1. Who you work for, and how
 
-- **Platform:** deployed on Render Singapore. URL: `set in Render dashboard → service settings (env var: PILOT_API_BASE)`
-- **Repo:** `github.com/atticusNew/Foxify_Collar`
-- **Active development branch:** `cursor/-bc-3aa2d238-ebb4-479a-98c7-2ade2838103f-6425`
-- **Pilot started:** 2026-04-23 20:00:00 UTC (Day 1)
-- **Pilot ends:** 2026-05-21 (Day 28)
-- **Live trading:** ENABLED on Deribit mainnet (DERIBIT_PAPER=false)
-- **Open protections:** rotates as trades open/expire (most are 1-day tenor, expire daily)
-- **Deribit account:** live mainnet, ~$420 BTC balance, `cross_sm` margin model with `cross_collateral_enabled=true`
+Michael (legal entity Atticus Trade, Inc., US; a Seychelles Ltd also exists; `michael@atticustrade.com`). Founder, seller, operator, regulatory contact. Self-funded. No employees. You are the engineering team, the quant and the advisor. He decides.
 
----
+- Plain language, real-world terms. He speaks to exchanges, traders, investors and regulators from what you write. If he cannot say it out loud, rewrite it.
+- Honesty is the brand: measured vs estimate labelled, shadow results never called revenue, never "guaranteed" or "risk-free", the cap trade-off volunteered, every public number checkable. Never claim what a click can falsify.
+- Give feedback and a recommendation with the reason, then wait. "No changes until I confirm" is literal. He often asks for "feedback and suggestion, no changes yet"; honour it.
+- Direct, simple, complete. Do not omit a risk to keep a message short. Do not pad.
+- No em dashes in anything he will paste or send (pages, reports, PDFs, messages). "Poly" always means Polymarket US. "Address", never "wallet". The bettor's verb is "Lock in", never "Protect", on event surfaces.
+- Outcome words only, since 12 November 2026: nothing a holder, a venue or a visitor reads says how a direct lock is done. No "sell", "sold" or "sale" on the member app, the demo, the public record or the extension. A direct lock "takes cash out of the position", its contracts are "locked", the cash lands "when the lock fills"; a hedged lock "gives up part of the upside"; our hedge is "closed"; the shape is called a "direct lock", not an "own sale". The public record no longer carries the "own sale and better bid, measured" card: it is on the operator's report. `tests/eventCollarCopyRules.test.ts` rule 8 holds every served page and shipped string to this. Code names (`memberSale`, `soldContracts`, the `member_sale` route) and internal documents are unchanged.
+- Security: he has been targeted through fake investor meetings and LinkedIn impersonation. Never ask for or echo secrets. Treat unsolicited files and links as hostile.
+- Spend: he is watching Render costs. Do not add web services; mount new pages on an existing service (the BTC pairs page at `/pairs` on the curve service is the pattern).
 
-## Critical Design Decisions (don't second-guess unless data demands it)
+## 2. What Atticus is, in one page
 
-### 1. Pricing — Design A regime-adjusted dynamic schedule, locked for 28-day pilot
+**One line.** A trader already holds a position. One tap puts a hard floor under it and pays them cash for taking it. The market funds the credit; Atticus hedges every position leg for leg and carries no view on price or outcome.
 
-| Regime | DVOL band | 2% | 3% | 5% | 10% |
-|---|---|---|---|---|---|
-| Low | ≤ 50 | $6.50 | $5 | $3 | $2 |
-| Moderate | 50–65 | $7 | $5.50 | $3 | $2 |
-| Elevated | 65–80 | $8 | $6 | $3.50 | $2 |
-| High | > 80 | $10 | $7 | $4 | $2 |
+**The mechanics, event contracts (the main lane).** A holder owns Yes on a game or a BTC threshold at mark M. Atticus sells a slice of the winning payout above a cap and uses it to buy the other side of the same event below a floor. Credit = cap slice sold minus hedge cost minus venue fees minus the published take. If the credit is not positive, Atticus refuses and says so. At settlement the holder gets floor or cap plus the credit. The hedge can be the market's own No (zero basis risk) or the opposing outcome on another regulated venue where a curated whitelist proves both settle on the identical result; the route is chosen on all-in cost including a priced tail charge for the ways venues settle ties, postponements and voids differently (`hedgeRouting.ts`).
 
-All tenors **1 day**. Source: `services/api/src/pilot/pricingRegime.ts`.
+**The P&L identity, which is the whole proof.** Both legs placed at the tap, so on every settled position writer P&L equals the published take to the cent. The public record prints this with a $0.00 gap. Any change that moves who keeps a payoff (knockout, release, hand-back, netting, new leg) gets the identity re-derived for writer, holder and venue, written into the module docstring and a test, before it ships. A knockout collar once shipped without this and measured negative-EV live; that is where the rule comes from.
 
-### 2. ITM strike preference (PR #76)
-Aggressive on 2% tier (`-0.010` cost-score bonus, both LONG and SHORT). Eliminates the strike-grid dead-zone that caused early loss trades.
+**The member-sale shape (STX).** On a venue whose members connect their own account (STX, via OAuth), the lock is the member's own partial sale into the venue's bid in their own account. No counterparty, no hedge, no capital, no take of ours. Same floor to the user; different plumbing. Combos (parlays) lock through the venue's RFQ, last leg only.
 
-### 3. SHORT-specific TP rule (Gap 5, PR #80)
-Currently **ENFORCED** via `PILOT_TP_GAP5_ENFORCE=true`. Targets barely-graze + clear-breakout patterns. Validation in progress; need 5+ SHORT triggers to confirm 60% recovery target.
+**Perps (`earnandprotect.xyz`).** BTC perp on Hyperliquid, long put about 6% out, short call about 4% out, both on OKX listed options, weekly tenor, credit vests through the cycle. Production-proven execution on OKX. Parked by the founder in October: "we will leave perps alone as the focus is prediction markets." Keep it running and healthy; do not build on it unless told.
 
-### 4. Hedge budget cap (R2.F, PR #85+#86)
-Cumulative hedge-spend cap by pilot day:
-- Day 1-2: $100
-- Day 3-7: $1,000
-- Day 8-21: $10,000
-- Day 22+: no cap
+**Doctrine.** Refusal-first. Receipts for everything. Neutral: no user funds, no user keys, not a venue. Append-only ledgers, state replayed from them, money in integer cents or `Decimal`, never float. Retail first: the user sees floor, credit, cap and nothing to manage; hedge legs and routing live in the operator views, never in the card or dev tools. Institutions see the same service with a skin, never a different truth.
 
-Enforced. Source: `services/api/src/pilot/hedgeBudgetCap.ts`. Pilot start configured via `PILOT_LIVE_START_DATE=2026-04-23T20:00:00Z`.
+## 3. The three lanes and how they are kept apart
 
-### 5. Treasury scheduler — SILENCED
-`TREASURY_ENABLED=false` in Render env. **Don't re-enable for retail pilot.** Treasury platform is a separate workstream pending CEO conversation.
+| Lane | What it is | For whom | Status | Where |
+|---|---|---|---|---|
+| **Retail events** (the product) | One tap Lock in on a position the user already holds; hedged cross-venue or on the venue's own book; public record | Venues and their users (B2B2C). Revenue: the published take (in code 10% of the gross cap slice, `takeBps` 1000, waived under 5 cents; measured about 0.3% of stake on the record; the founder says "about 1%" to investors and offered ProphetX "30% of the spread") plus a venue share of the take (`EVENT_X_PARTNER_SHARE_PCT` 50 on the demo) | Live demo, live shadow record since 2026-09-12 (1,351 settled on Nov 8, writer P&L equals take to the cent), real locks executed via the browser extension: first on 2026-10-15 ($20 Colts position on ProphetX, hedge filled on Kalshi through the ParlayX pod, 19.17 contracts for $5.25, $13.85 paid to the holder on 10-18), then multi-venue hedges on Kalshi, ProphetX and Novig, and a live last-leg parlay lock on Novig on Nov 4; STX member app in STX's demo environment (no real money there yet) | `cursor/tier2-cross-venue-2bfa` |
+| **Retail perps** | Earn & Protect on Hyperliquid, hedged on OKX | Perp DEXs and HL front-ends (non-US) | Running, parked | `cursor/hl-toggle-demo-9151` |
+| **Institutional exploration with Ted Sturiale** | Read-only cross-venue reports and a minimal "pairs" UI with a Launch button and JSON endpoints that his spread engine attaches to. Exploring whether our engine (pricing at size, fee-exact cross-venue arithmetic, identity audit, refusal) is useful to an institutional spread/arb operation with his speed and his network's capital | Ted (founder of Cerious Systems, Chicago, 2026: "Cerious Trader", a C++ low-latency multi-exchange platform across Kalshi, Polymarket, Coinbase, CME, and a "Nexus Spread Engine"; ex-Trading Technologies; also a DV Trading address. Options trader, CFTC venues only, works Kalshi and Polymarket US by hand; websockets are too slow for him; wants to find and hedge gaps across "similar assets", stay delta neutral; mentioned SOFR, Treasuries, index and gold futures as the asset list his finance people care about) | Four meetings' worth of material delivered in a week (BTC curve report, sports venues report, BTC pairs page). He is enthusiastic ("alpha for success about 75%"), wants to move fast, has said capital from his network is not the constraint if we show value | Same branch, `src/btcCurve/`, `src/sportsVenues/`, served on `atticus-btc-curve` and `atticus-sports-venues` |
 
-### 6. Circuit breaker
-Armed. `PILOT_CIRCUIT_BREAKER_MAX_LOSS_PCT=0.7` (70% drop in 24h trips it). Enforce mode on. Source: `services/api/src/pilot/circuitBreaker.ts`.
+**Keep the lanes separate in your head and in the code.** The retail product is a writer that takes a published fee for removing risk. Ted's lane is a reader and a trigger for a trader who takes risk for a living; Atticus places no orders there. Do not let the second redefine the first. The founder's words: "I see no reason we can't explore both lanes." When Ted saw a 52-cent credit on a game he asked how you make that trade 250,000 times; the answer is that the retail product is not that trade, and the institutional lane is where his question belongs.
 
-### 7. Biweekly product cutover (NEW 2026-04-30 — PRs #109-#114)
+**The on-chain lane is a fourth, kept apart from all three.** Polymarket International, SX Bet and Limitless, reached through ParlayX, for the Seychelles entity. Its own Render blueprint, service and key; the only source it shares with the event lane is the ParlayX client (`aggregatorMarkets.ts`). The BTC curve key opens nothing there. First piece is the read-only venues page; an interactive demo on its own site is the founder's next step, and nothing on-chain goes to production before there is a real on-chain client and funding.
 
-The 1-day product is being replaced by a per-day subscription model with 14-day max tenor. **Code is fully merged but live trading still runs the 1-day product until the feature flag is flipped on Render.**
+**Disclosure with Ted (standing instructions).** Read-only public market data; no trading credentials in anything hosted (his keys stay with his engine). Hold back: the take rate and host share; the pricing rules as numbers (depth walk, tier offsets, EV ceiling, credit gates, whitelist and parity logic, mark-gap guard, the in-play trick); ParlayX terms, volumes and the Crypto.com timing; Prospect Markets; which venues are in DMs; investor names; the extension as a demo; source code and repos. Do not use ParlayX mapping in his tools (public feeds only). Say freely: the honest cost line for holders, the shadow-versus-real distinction, that Polymarket reads were shadow only, that perps ran on Hyperliquid (not CFTC), and that the founder has built for 18 months starting with perp protection in DeFi before TradFi moved into events. The collar section of the curve page stays off for him. Be open about mechanics and honest about limits; be pragmatic about what is handed over "on a platter". He does not want access to our code and said so; containers or endpoints, not repos. He was scam-checked (prior infostealer incident) and verified through the Cerious portal.
 
-**Pre-launch checklist** (in this order, do not skip):
+## 4. Company status, 10 November 2026
 
-1. **All 6 PRs merged** to active branch (#109 #110 #111 #112 #113 #114).
-2. **Schema migration confirmed.** PR 2 added 7 columns to `pilot_protections` via `ensurePilotSchema` (runs on every server startup). After Render restart, verify:
-   ```sql
-   SELECT column_name FROM information_schema.columns
-   WHERE table_name='pilot_protections'
-     AND column_name IN ('tenor_days','daily_rate_usd_per_1k','accumulated_charge_usd','days_billed','closed_at','closed_by','hedge_retained_for_platform');
-   -- expect 7 rows
-   ```
-3. **Hedge budget cap raised.** Default schedule of $100 day-1-2 trips on the very first biweekly trade (~$258 cost). Set in Render env:
-   ```
-   PILOT_HEDGE_BUDGET_SCHEDULE_JSON='[{"throughDay":7,"capUsd":1500},{"throughDay":21,"capUsd":8000},{"throughDay":null,"capUsd":null}]'
-   ```
-4. **Deribit funded.** Need ≥ $1,500 added (~$1,800 total) for the 3-trade pilot test per D4. CEO confirmed funding plan 2026-04-30.
-5. **Flip the feature flag.** In Render env: `PILOT_BIWEEKLY_ENABLED=true`. Render auto-restarts within ~5 min.
-6. **CEO opens first biweekly trade.** Verify Deribit shows the 14-day option.
+**Live surfaces** (all Render; the event blueprint auto-deploys from the branch tip, the perp blueprint is a manual deploy):
 
-**Pricing (locked per CEO direction 2026-04-30, deliberately aggressive starting baseline):**
-
-| Tier | Per-day rate per $1k | $10k position |
+| Surface | Service | What it shows |
 |---|---|---|
-| 2% SL | $2.50/day | $25/day, max $350 over 14d |
-| 3% SL | $2.50/day | $25/day, max $350 over 14d |
-| 5% SL | $2.00/day | $20/day, max $280 over 14d |
-| 10% SL | $1.50/day | $15/day, max $210 over 14d |
+| `event.earnandprotect.xyz` | `atticus-event-demo-cross-venue` (Oregon) | the embed demo: a host's positions with the Lock in line under every row, phone and desktop shells, Trader and Venue views, Parlays tab, in-play on; hedge venues offered tonight Kalshi, ProphetX, Novig; venue names hidden on the public page by default (`EVENT_X_NAME_HEDGE_VENUES` unset) |
+| shadow record | `atticus-event-shadow` (Oregon, disk) | the append-only track record, the lock path the extension and the STX app use, live hedge rails (Kalshi direct or via the ParlayX pod), reference books from Novig and STX, the venue scoreboard, last-leg parlay shadow |
+| STX member app | same service, `/app`, host `stx.earnandprotect.xyz` | the hosted Lock in page in STX's skin, OAuth, member's own sale, combo RFQ behind `MEMBER_APP_COMBO_RFQ` |
+| BTC curve report and BTC pairs | `atticus-btc-curve` (Singapore, disk), `/` and `/pairs` | Ted's material: Kalshi and Polymarket US ladders against the Deribit smile; the pairs UI and endpoints |
+| sports venues report | `atticus-sports-venues` (Oregon, disk) | Kalshi, Polymarket US and Novig game-winner books side by side after fees |
+| on-chain venues page | `atticus-onchain-venues` (Oregon, no disk), blueprint `render-onchain.yaml`, page at `/?k=<ONCHAIN_VENUES_KEY>` | since 13 November 2026: the same game's winner market on Polymarket International, SX Bet and Limitless, read through the ParlayX data key (catalog and book stream), each venue's fee in, leaving at home against a cover on the best of the three. Read only, internal. Code in `services/api/src/onchainVenues/`. Read on the live service, 13 November 2026 (01:11 UTC, commit `017b84da`): 141 competitions, 686 games in 48 hours, 198 of 198 books read, **no game on two of the three venues**, and the data key **refused (403) on the partner's Limitless list**. Since then: `/healthz` carries `diagnostics` (the catalog in counts: the feed's venue names, listing fields, market types, games whose venues sit in different winner markets, a few examples) to fix the winner-market reading against the real feed, and they move behind the page key once that is done; catalog passes run back to back while games are still to read; Limitless's game markets come from its own public list (`limitlessPublic.ts`, football groups only, tied by team names and the start it names) when the partner refuses. What the diagnostics showed (01:46 UTC, 300 games read): Polymarket sits in a game's main moneyline market and SX Bet in a second one of its own under the same game ("Winner including overtime", outcomes by full team name, no side), on 50 of the 53 games naming both; some SX Bet markets arrive with one side only (NBA, college); the feed names US games by codes ("WSH @ NJD"). So `joinWinner` brings a venue into the chosen market only when both are whole-game MONEYLINE markets with the same number of outcomes and every outcome pairs by team name (rows tagged by names), one-sided markets are left alone, and the board's cap (`ONCHAIN_VENUES_MAX_GAMES`, 120) gives its places to games on two or more venues first. A page key holding a plus sign opens the page pasted as it stands. The open health check shows only this page's three venues. Confirmed live at 02:10 UTC (commit `d3941a95`, 285 games read): 49 games on two venues, 49 of 49 split games joined, none left apart, 56 of 57 SX Bet books read; Limitless still 0 tied. Since then the open `/healthz` carries counts only and the names (market titles, example games, Limitless markets left over with what the catalog has at that time) are at `/api/diagnostics?k=<key>`; this agent has no key, so the founder pastes that when a pairing needs checking. With the catalog full (15:29 UTC, 598 games): 159 games on two venues (Polymarket and SX Bet), 39 of them off a board of 120; 159 split games joined and 18 left apart (names at `/api/diagnostics`); Limitless 62 of the 66 markets starting in the window tied to a game, but no Limitless book asked for, because its games are on no other venue here and start later than the rest, so none reached the board. Since then the board holds 240 and gives its places to games on two venues first, then to games on one venue, the three venues in turn. Limitless's own order book is public without a key (`GET /markets/<slug>/orderbook`, read 13 November), the fallback if the partner's stream refuses its books. The partner's stream does give Limitless books (27 asked, 27 read, no error, 13 November 16:30 UTC while the catalog was partly read). The Render service still ran with a limit of 120 that evening (`catalog.boardLimit` on `/healthz`): the blueprint's new value was not applied, the founder sets `ONCHAIN_VENUES_MAX_GAMES` by hand, and until then Limitless is off the board. Still not checked against live data: Limitless's prices, why 18 games stay apart (their names are on `/api/diagnostics`), the sizes in the SX Bet book conversion (its prices are checked: on 13 November the founder read the page with 120 games on both venues, and SX Bet's median gap to Polymarket's mids was 0.4¢, which a wrong price or a swapped outcome would not give; the stake-to-shares step is from docs only), each venue's result rules (Limitless football: 90 minutes plus stoppage, stays open if postponed). **The on-chain demo** is on the same service at `/demo`, open without a key (`ONCHAIN_DEMO=off` takes it away), and the event site passes `/onchain` through to it: a venue's own positions page (Polymarket and Limitless "Portfolio", SX Bet "My bets") with one Lock in button on each row, a Mobile and a Desktop view (it opens on Mobile; `?view=desktop` opens on the table; a tap on Lock in runs a spinner through "Pricing", "Executing", "Confirming" for a few seconds before the row reads locked, and nothing is priced or placed in that time; a locked row's Details toggle opens a receipt of what was done, the amount, that it is the same win or lose and paid at settlement, what closing paid then, the difference and the time, with nothing of how; the founder's email and Telegram are on the page as "Talk to us"), each of the three venues as the host in its own colours (read from each venue's site on 13 November 2026; names in text only, no logo, the founder has no permission for logos; "Not affiliated with or endorsed by any venue" is on the page). Source `src/onchainVenues/demo.ts` (the figures) and `demoHtml.ts` (the page). One simulated position a game that two venues or more list: pick, size and the price it was bought at come from the game's id, never from how it prices, and the service keeps size and entry price for as long as the game is on the board (in memory; a restart draws them again). For the whole position it prices closing on the home book level by level against buying every other outcome wherever it is cheapest, fees in, whole cents. The button reads "Lock in $X" (paid when the game settles) and is offered only when that is at least $1 above closing now; otherwise the button is greyed with no reason given. At most ten rows a venue, better known leagues first, at most four a league, never ordered by price; picks priced under 10¢ or over 90¢ are left out. What goes out is the row and three amounts (value now, lock, the difference): no book, no level, no count of venues or positions, no venue named but the host, and the partner is not named. It was built and checked against a stand-in feed, not the live one (this agent has no partner key). **Football came through without its draw (found on the live demo, 13 November 20:50 UTC):** all 24 UEFA Nations League rows were two-outcome games, with Limitless's "this team wins" markets tied in by name and its Draw market dropped, so price held plus cover came to 67¢ to 90¢ and the page showed locks far above anything real. SX Bet's public API lists such a game both as a two-way market and as three "X / Not X" markets; what the partner's feed sends for it has not been seen. The fix is `src/onchainVenues/fullSet.ts`: `notAFullSet(game)` gives a reason when a game's outcomes are not every way it can end (a draw listed apart, in the feed or on Limitless's list; a football league or sport with no draw outcome; one venue's asks adding to under 97¢ or bids to over 103¢; one of each outcome costing under 97¢ across the venues). Such a game keeps its prices on the keyed board, tagged "no cover: reason", and gets no cover there and no position in the demo; a three-way Limitless group is no longer tied to a two-way game. `/healthz` counts them (`notAFullSet`) and `/api/diagnostics?k=` names them with the reason. Until non-football games are on Limitless and a second venue, the Limitless tab has no rows and the page leaves it out |
+| `earnandprotect.xyz` | `atticus-earn-protect` (+ bot, Postgres) | perps retail demo; perp shadow book on its own service |
+| extension | `demo/event-lockin-extension` 0.7.44 | the Chrome extension that draws the Lock in pill and panel on ProphetX, Kalshi and Novig; used for the real locks and the videos |
 
-Flat across volatility regimes. Tunable via `PILOT_BIWEEKLY_RATE_<N>PCT` env vars without a deploy. Re-enabling regime-variable pricing is a 1-line change in `biweeklyPricing.ts:getBiweeklyRatePerDayPer1k`.
+**Partners and prospects, with status and the next move:**
 
-**Architecture:**
-- `services/api/src/pilot/biweeklyPricing.ts` — rate table, helpers, feature flag
-- `services/api/src/pilot/biweeklyActivate.ts` — quote + activate handlers (called from `routes.ts` early-return branches when `product:"biweekly"` in body)
-- `services/api/src/pilot/biweeklyClose.ts` — close handler (used by the new `POST /:id/close` endpoint, by triggerMonitor close-on-trigger, and by the natural-expiry sweep)
-- `pilot_protections` table — 7 new columns, all back-compat (legacy 1-day rows default to `tenor_days=1` and the rest null/0/false)
-- Hedge manager TP timing — tenor-aware (legacy 1-day behavior unchanged; biweekly gets √14× longer cooling, 14× longer prime window, 4×-capped near-expiry salvage)
-- Per CEO direction: when biweekly trigger fires, protection closes for user but hedge stays open for platform (`hedge_retained_for_platform=true`). Hedge manager's TP logic owns disposition.
+| Who | Role | Where it stands | Next |
+|---|---|---|---|
+| **ParlayX** (Andrew, CEO; Antonio, CTO) | institutional aggregator and router across Kalshi, Polymarket, ProphetX; the demo's primary pricing feed and the execution pod our live Kalshi hedges can route through (our subaccount, their pod, our TRADE key) | Read key since Oct 21, mapping bug found by us and fixed by them Oct 22, feed wired as the demo's primary pricing source, met the whole team at NEXTPredict, Kalshi and ProphetX hedges execute through their pod with our TRADE key. Paid month to month (about $200 a month: a seat and a pod). Nothing signed. They are integrating Crypto.com and adding Novig and Polymarket US. Andrew introduced us to Prospect Markets. The founder wants to stay loyal without exclusivity ("as much go through them as possible", but "we don't want to be beholden to one venue") | Call about a pilot (funding, pods). Do not describe their terms or volumes to third parties |
+| **Prospect Markets** (Johnny Chen, CEO) | A broker, not an exchange, and not owned by Crypto.com (public company, TSXV: MKT). Its US arm is a CFTC introducing broker: its customers trade the contracts of Crypto.com's exchange (CDNA, the book behind OG), and their accounts are carried by Crypto.com's clearing broker. It has no book and no exchange fee of its own. Checked on the web 11 November 2026 | Andrew at ParlayX made the introduction and the founder may name ParlayX to them. Meeting Tuesday 17 November. Crypto.com's exchange is read on `/sports` as the fifth venue, and section 5 there ("A holder on each venue") is the measurement for a Prospect customer | The reader's page is `/prospect` (results only) and the founder's preparation is the meeting brief at `/lockin/brief` (internal key; live figures, bear, base and bull cases, pricing stance, integration design, questions both ways). `docs/event-prospect-one-pager.md` is now a pointer to both. `docs/event-prospect-integration.md` is the one-page integration ask, to send only after an NDA; the letter of intent has a broker variant. Nothing is built for Prospect's own data yet, on purpose: after a yes, an intake for their fills file and a quote service with their key. Re-read the brief on Monday 16 November: NFL is counted once 8 games are in. A share of a customer's per-trade fees paid to us is a counsel question (we are not registered); a flat licence fee is not |
+| **STX** (Justin; Hari, CTO) | new DCM and DCO, Launch Program for third-party apps | We built the member app in a weekend on their demo environment; testimonial and blurb delivered for their launch material; combo RFQ shape agreed with the CTO (RFQ and accept through the same path as the sell, `orders.write`); no real-money trading on STX yet. The founder told Justin "we take nothing from STX or members; our model is a small execution fee later, a few tenths of a percent" | Move with them to real money when they open it; parlays beyond the last leg are the known limit he named |
+| **Kalshi** | DCM; the venue of the first real hedge fill | Advanced API tier, sharded subaccounts, a key restricted to the ParlayX pod, RSA key (not Ed25519); pitched them December 2025, no response since | Nothing to chase; be the best third-party layer on their book |
+| **Polymarket US** | CFTC venue | Builders Program verified, builder code on orders, credentials obtained (grant declined); hourly, daily and weekly BTC ladders read live in Ted's material | No execution path yet; ParlayX is adding it |
+| **ProphetX** (Jake; CPO, COO, head of product all messaged) | B2B-first DCM and DCO | Extension works on their board; the first real lock was on a ProphetX position; hedges reach it through the ParlayX pod; 2% fee on net gains modelled; no partnership | Follow up on the B2B-catalog framing; they are the venue class most likely to sign |
+| **JuiceX** (Daniel Cudgma, CEO; Joseph Battista, COO) | CFTC DCM | Outreach; the founder's read: "the one venue on my list where our product maps one to one" | Pursue |
+| **Novig** | sports exchange with a public API | KYC done, API keys, a funded "atticus hedge" subaccount, direct live hedge route since Oct 30 with our own trading key (not via ParlayX), live last-leg parlay lock Nov 4; Novig shipped its own "Participation Protection" props Oct 29 (the founder called it "half of one button"); head of partnerships reached on LinkedIn | Novig often prices as the cheapest hedge on singles (no fee pre-tip); the demo deliberately picks games where Novig is not cheapest so the "hedge on your own venue when it is best" rule is visible |
+| **Sporttrade** (Jack, head of trading) | regulated exchange, CFTC approval about Nov 2 | Long back-and-forth; he watched the live-hedge video, suggested the unwind; brand preset exists | Keep warm; congratulations and broker-pivot message drafted |
+| **River Markets** (Oscar Levy) | prime-brokerage ambition, $8.5M raised | One sheet delivered; the founder then parked it ("let's forget about river market for now") | Only if they reply |
+| **Sam Schwartz** (PM Markets; met at NEXTPredict) | well-connected industry read | Generous with advice: Robinhood is the realistic whale, venues want to own the user, watch Matchbook, Smarkets, STX; was given a scoreboard endpoint to check | Keep him informed; ask for intros when there is something new to show |
+| **51 Alpha** (Agnese Rozite) | Kalshi-affiliated educator with a deep network | Two calls, one sheet delivered; she understands it and sees the value for a trader | Find the collaboration shape (class, affiliate, intros) |
+| **WagerWire / Wire Markets** | listings marketplace | Ten public listings priced with a lock, mockup and message sent to Travis and Melissa | Awaiting |
+| **FanDuel, Robinhood, DraftKings, Flutter, Fanatics, Underdog, Predict Market, 365 Predict, Whaoopredict, AsiaPredictX, Crypto.com (Aiden Johannsen)** | the big distribution names | LinkedIn connections and messages; retention framing for FanDuel ("a retention tool you won't fund off your balance sheet"); no live threads | Three touches then park. Robinhood is the realistic whale; Kalshi, Polymarket and DraftKings want to own the user |
+| **Ted Sturiale** | see section 3 | Active, fast-moving | Both Launch modes are built (send to a service, open his page); ask which his engine is and set `BTC_PAIRS_LAUNCH_MODE` on the curve service (section 8) |
 
-**Rollback:** set `PILOT_BIWEEKLY_ENABLED=false` (or unset) — instant fallback to legacy 1-day path. All biweekly code is dormant. Existing biweekly protections continue to render and can be closed; no new ones can open.
+**Public proof the founder carries:** the record page numbers (refresh before use; Nov 8: 1,351 settled, writer P&L $573.46 against take $573.45, holders' all-in cost about 2% of stake versus riding naked, which is volunteered as the honest cost line), one real lock settled through Kalshi, multi-venue and parlay locks on ProphetX and Novig on video, STX demo lock "$18 or $0 became $15.27 or $4.27 in one tap". NEXTPredict (Oct 22 to 23) gave a public shout-out and the stage validated the thesis without naming us.
 
-**1-trade-per-24h guard:** enforced in `biweeklyActivate.handleBiweeklyActivate`. Per CEO direction (one trade per day during baseline-discovery phase). Removable in a follow-up PR when CEO is ready to scale.
+**Perps, for the record (Nov 3 scorecard):** 4,217 collars, $155M notional, 2,473 settled; take $23,224; hand-back beyond credit $22,454, uncollectable on Hyperliquid's one-way rail (so net about $770); OKX fees about 30% of gross; netting saves 33 to 51% of legs. The founder: "OKX fees are killing us but that's ok because it will only get better." This is why perps wait for a venue ledger and a fee tier, not for code.
 
----
+**Capital.** Self-funded. Pre-seed ask as of 6 October: $250k to $400k on a post-money SAFE at a $5M cap; the founder also says "$200k to $400k". The money is hedge margin for the first live cohort; the platform itself "idles and scales relatively cheap". Capital need at shadow volumes was about $3,500 on Kalshi and $7,500 on Polymarket. Avenues: angels and small crypto-derivatives funds (names in `docs/earn-protect-partner-outreach.md`), a hedge collateral facility from a lender instead of an angel (pitch sheet section 13), venue revenue share once a venue signs, and now Ted's network for the institutional lane ("capital from his network is the least of our worries if we provide value"; the financier would hold the capital, non-custodial on both sides). Any capital commitment he is asked about is tied to an LOI and a projected volume commitment. The old deck numbers ($2M seed, $10M cap, $4M cap with discount, "$50M/day committed") are dead; correct them wherever found. A prior agent's valuation sheet ($10M to $15M on the proof, $25M to $40M once one venue is live, a $1.5M to $2.5M SAFE at a $12M to $15M cap) was an estimate the founder did not adopt; do not quote it as his. His stated ideal exit: "sell the platform for a realistic but decent sum." Crunchbase heat score 91 to 92 at last check. Running costs are small and out of pocket: Render services, ParlayX about $200 a month, test positions of $5 to $20.
 
-## Open Questions / Pending Decisions
+**Paths that make sense as a company (the founder's own framing, in order of nearness):** a venue agreement on the event lane (ProphetX, STX, Prospect, JuiceX class) that turns the record into fees; the ParlayX relationship as the route into venues and into Crypto.com's rails; the institutional lane with Ted if the first deliverables land; a pre-seed or a collateral lender for hedge margin; a non-CFTC lane (Polymarket international, Limitless) only through the Seychelles entity, strictly separate from the CFTC rails, and only if directed; eventually a sale of the platform.
 
-1. **CEO use case:** speculation or integrated hedging? (asked, awaiting response)
-2. **Tenor:** 1-day product replaced by 14-day biweekly subscription per PRs #109-#114 (pending feature-flag flip on Render — see Critical Design Decisions §7).
-3. **Dynamic pricing vs fixed:** biweekly launches with FLAT rates across regimes (per CEO 2026-04-30: "absolute baseline"). Re-enabling regime-variable pricing is a 1-line change in `biweeklyPricing.ts` after we collect enough data.
-4. **Recovery rate validation under biweekly:** D2 modeled 159% recovery (BS) vs 18% on 1-day. Need n≥3 live biweekly triggers to validate.
-5. **Treasury platform spec:** deferred; Q&A document drafted but CEO answers pending.
-6. **Capital scaling beyond 3-trade test:** D4 sized $1,500 added for 3 concurrent biweekly trades. After 3-trade test passes, plan funding for 5 (~$7,500 floor) and 10 (~$18,000 floor) before lifting the 1-trade-per-24h guard.
+**Regulatory posture (know it, do not act on it).** Shadow trading and hedging as principal needs no registration. B2B white-label to registered venues is the clean path. Direct-to-consumer in the US is a counsel question. US events go through the venue's CFTC rails (Kalshi, ProphetX, STX, Prospect, Polymarket US). CFTC Letter 26-25 (passive software providers) may not be the operative frame because Atticus is a principal on the retail lane; on STX it is not even that (member's own sale). The sentence he says: "the B2B white-label path is clean; the direct-to-consumer path is a counsel question," then stop.
 
----
+## 5. The repository: what matters and what to ignore
 
-## Recent Activity (last 5-7 days)
+`github.com/atticusNew/Foxify_Collar` (legacy name). 301 remote branches, 1,635 commits on the event branch, 350 test files. Most of it is history.
 
-| Date | PR | Summary |
-|---|---|---|
-| 2026-04-22 | #82 | Triggered tab filter bug — exclude naturally-expired |
-| 2026-04-23 | #83 | Triggered recovery/ITM display + widget archive sync + SHORT 2% strike-grid hardening |
-| 2026-04-23 | #84 | Foxify Pilot Agreement v2 (4-page PDF) |
-| 2026-04-23 | #85 | Hedge-budget cap (R2.F) initial implementation |
-| 2026-04-23 | #86 | Hedge-budget cap correctness fix (sum execution_price × quantity, exclude paper fills) |
-| 2026-04-23 | #87 | Check Balance button now hits Deribit (was hitting dead Bullish endpoint) |
-| 2026-04-25 | #88 | Lower low-regime 2% $7 → $6.50 (CEO feedback on calm-regime price weight) |
-| 2026-04-29 | #89 | Restore AGENT_HANDOFF.md on active branch (was on a side branch, never merged) |
-| 2026-04-29 | #98-#100 | Day-6 platform assessment + ghost-trade investigation. CEO-confirmed ghost was an Open-Without local-only row. Three follow-on PRs: handoff doc Day-6 refresh + URL redaction, admin filter chip, remove Open Without button. |
-| 2026-04-30 | #101-#108 | **Phase 0 analysis complete.** Five deliverables across 4 PRs (D1 #105 pricing dataset, D2 #106 trigger replay, D3 #108 per-day pricing model, D4 #107 capital requirements). Verdict: biweekly product is materially better than 1-day in every regime tested. Per-day rate table proposed and validated. |
-| 2026-04-30 | #109-#114 | **Biweekly cutover (6 PRs, chained sequence).** Replaces the 1-day product with biweekly per-day subscription pricing. PR 1 (#109) pricing module + feature flag, PR 2 (#110) schema + ledger, PR 3 (#111) activate path + 14-day hedge buy + 1-trade/24h, PR 4 (#112) close endpoint + trigger close-handling + natural-expiry sweep, PR 5 (#113) widget UX subscription model, PR 6 (#114) hedge manager TP retuning for 14-day options. **Feature flag `PILOT_BIWEEKLY_ENABLED=false` by default; live trading still on 1-day until flag flipped.** See "Critical Design Decisions" §7 below for the full launch checklist. |
+**Branches that matter.**
+- `cursor/tier2-cross-venue-2bfa`: every event, STX, Ted and report change lands here by PR. `render-event-demos.yaml` deploys from its tip (auto-deploy on).
+- `cursor/hl-toggle-demo-9151`: perps. `render-earn-protect.yaml` deploys from it (manual deploy).
+- Everything else (`main` dated April, `vc-*`, `cursor/-bc-*`, the Foxify and Deribit pilot branches, PRs numbered below about 160) is the concluded era. Do not read, rebase, or reference it.
+- Branch names you create: `cursor/<description>-<suffix>`; the prior agent's suffix was `-55da`. One PR per logical change against the correct deploy branch via the PR tool. The founder merges and deploys.
 
-All numbered PRs above merged to active branch.
+**Essential code, event lane (`services/api/`).**
+- Services: `scripts/eventProtectXDemoService.ts` (board, embed, venue view, parlays; HTML in `eventProtectEmbedHtml.ts`, `eventProtectXAppHtml.ts`), `scripts/eventShadowWorker.ts` (record, lock path, live hedge rails, member app routes, scoreboard, reference books; HTML in `eventShadowHtml.ts`, `memberAppHtml.ts`, `eventScoreboardHtml.ts`), `scripts/eventEgressProxy.ts`.
+- Engine: `src/eventCollar/crossVenue/collarSearch.ts` (the credit identity, tiers, EV cost; the one place the math lives), `hedgeRouting.ts` (rule table, tail charge, gates), `crossVenuePricer.ts`, `minimumCredit.ts`, `markGapGuard.ts`, `farOutGuard.ts`, `lockGate.ts`, `earlyClose.ts`, `resolutionWhitelist.ts`, `eventMatcher.ts`.
+- Venues: `kalshiLadder.ts`, `kalshiOrders.ts`, `kalshiAccount.ts`, `kalshiRfq.ts`, `polymarketPublic.ts`, `polymarketRfq.ts`, `polymarketCombos.ts`, `novigOrders.ts`, `novigAccount.ts`, `prophetxOrders.ts`, `venueMarkets.ts`, `venueBooks.ts`, `venuePositions.ts`, `aggregatorMarkets.ts`, `aggregatorBooks.ts`, `aggregatorOrders.ts`, `aggregatorHeldBooks.ts`.
+- Execution and record: `hedgeExecutor.ts`, `hedgeExecutorFromEnv.ts`, `liveHedge.ts`, `shadowLedger.ts`, `crossLedger.ts`, `shadowNetting.ts`, `shadowRefusals.ts`, `shadowCounterfactuals.ts`, `shadowVenues.ts`, `venueScoreboard.ts`, `ledgerArchive.ts`, `lastLeg.ts`, `parlayPicks.ts`, `parlayRetail.ts`.
+- Member app: `memberApp.ts` (OAuth, sealed tokens), `memberSale.ts` (the sale arithmetic).
+- Retail allow-lists: `src/eventCollar/retailShowcase.ts`, `activityRetail.ts`. Nothing leaves to the card that is not on the list.
+- Tests: `tests/eventCollar*.test.ts`. Run with `cd services/api && npx tsx --test tests/event*.test.ts`.
 
----
+**Essential code, Ted's lane.** `src/btcCurve/` (`kalshiLadders`, `polyUsLadders`, `deribitChain`, `model`, `analytics`, `report`, `reportHtml`, `collarLadder`, `pairs`, `pairsCollector`, `pairsHtml`), `src/sportsVenues/`, `scripts/btcCurveReportService.ts`, `scripts/sportsVenuesReportService.ts`, `scripts/btcPairsService.ts` (standalone copy of the pairs page for a local run). Docs: `docs/btc-curve-report.md`, `btc-curve-study-guide.md`, `btc-curve-plain-english.md`, `sports-venues-report.md`, `btc-pairs.md`. Tests: `tests/btc*.test.ts`, `tests/sports*.test.ts`. **For DraftKings (14 November 2026):** `/draftkings` on `atticus-btc-curve`, under `DRAFTKINGS_PAGE_KEY`: Lock in replayed on every game-winner trade in the daily files DraftKings' exchange publishes (DKeX, Railbird Exchange; `railbirdexchange.com/reports/`), 4,389 finished games through 13 November. `src/sportsVenues/dkex.ts` reads the files, `dkexRecord.ts` holds the fee and the record, `draftkingsHtml.ts` is the page, `scripts/sportsDkexBuild.ts` rebuilds `src/sportsVenues/dkexSeed/record.json`, which is all the service reads: the page moves only when that file is rebuilt and deployed. The files carry no side for a trade; it is read from the price and tilted low (a trade read as a sale is recorded a cent lower and locks are priced only on those), checked against the Crypto.com tapes that publish it. Same hold-back as the Prospect page, enforced in `tests/sportsDkex.test.ts`. No contact at DraftKings has been sent the page yet. **For the Prospect Markets meeting (17 November 2026):** `/prospect` on `atticus-btc-curve`, a page made for that one reader under its own key (`PROSPECT_PAGE_KEY`; `src/sportsVenues/audiences.ts`, `prospectHtml.ts`). The full replay tables, the method and the lock card with its order are internal, at `/lockin` under `LOCK_IN_INTERNAL_KEY`; that link is never sent to a reader. Neither is served under `BTC_CURVE_TOKEN` and the board does not link to them: that key is held by the BTC lane's reader, who is not shown this material. **The reader's page shows results and holds back how they are produced** (the founder's rule, 12 November): no order, no sizing, no thresholds, no other venue, no data pipeline, nothing of Atticus's role in the flow; each figure is defined by what the customer ends up with. `docs/sports-venues-report.md` lists it and `tests/sportsProspectPage.test.ts` enforces the wording. Do not add to that page anything that tells the reader how to make a number themselves. The page names the reader ("Prospect") and never says "broker" or "you", and does not say how Prospect is paid on an order (not public). Prospect opened to the public on 12 November 2026 after an invitation-only start in September, so the games counted before that are the exchange's customers, not Prospect's. Do not claim anywhere that a third party beats Crypto.com's bid: measured after every fee there is room for that in well under 1% of readings. The service keeps Crypto.com's public trade tape per game (`src/sportsVenues/tape.ts`, files under `<data dir>/tape/`), and once a game is over replays Lock in on every real position on it (`tapeReplay.ts`, `lockMath.ts`); `lockNow.ts` prices a lock on a named position from the live bid. The tape must be read with `start_ts=1` (the venue otherwise looks back 24 hours only) and is collected while a game is listed: a finished game's contracts leave the public feed within days. Games captured before the service kept the tape ship in `src/sportsVenues/tapeSeed/`. Detail: `docs/sports-venues-report.md`, "Lock in on the trade tape"; what to say: `docs/sports-venues-study-guide.md` section 10.
 
-## Operating Principles (the user's preferences, learned)
+**Essential code, perps.** `scripts/creditCollarDemoService.ts`, `scripts/earnProtectWebAppHtml.ts`, `src/singleSide/twoSided/creditCollar/**`, `scripts/perpShadowWorker.ts`. Tests `tests/creditCollar*.test.ts` (675 as of October). Do not touch unless assigned.
 
-- **Plan first, get confirmation, THEN implement.** User dislikes "I'll just do it" approach without a clear plan/analysis step.
-- **Be pragmatic with credit/time.** Don't over-engineer or write excessive tests.
-- **Honest assessment over optimism.** User repeatedly asks "honest read?" — give the real answer including downsides.
-- **Separate PRs for separate logical changes.** No batched mega-PRs.
-- **Always create a PR for changes;** user uses `gh pr merge X -R atticusNew/Foxify_Collar --squash --delete-branch` to merge.
-- **Branch naming:** `cursor/<short-description>-38e5` (the `-38e5` suffix is required).
-- **ALL financial calculations use `Decimal` type, NEVER float.**
-- **Don't touch treasury system without explicit user request.**
-- **Don't change open protections' economics retroactively** (premium is locked at activation time).
-- **Stress regime pricing must stay high** — that's the buffer keeping weighted EV positive across cycles.
+**Deploy and env.** `render-event-demos.yaml` is the source of truth for the event services and documents every env var in comments; secrets are set in the Render dashboard, never in git. `docs/RENDER_ENV_REFERENCE.md` for the perp side. Operator routes answer to `EVENT_X_ADMIN_TOKEN`; the lock path to `EVENT_SHADOW_LOCK_KEY`; live hedging to `EVENT_HEDGE_STRATEGY=live` plus an allowlist, send flag and kill switch; nothing sends unless `EVENT_HEDGE_LIVE_SEND=yes`.
 
----
+**Stale documents.** `docs/HANDOFF_CURRENT_STATE.md` (August), the April and October versions of `docs/AGENT_HANDOFF.md` (the perp branch still carries the April one), `CTO_GUIDE.md`, `README.md`, every `PHASE_*`, `FOXIFY_*`, `pilot-*` file, `render.yaml`, `render-shadow.yaml`, `render-snapshot.yaml`, `render-okx-*.yaml`, `render-falconx-live.yaml`, `render-pricing-harness.yaml`, the root `src/` and `test/` scaffolding. Treat them as archaeology.
 
-## Key Docs in Repo
+## 6. Built versus needed for live, per lane
 
-| Doc | Purpose |
+This is the founder's main ask of you: the demos must be optimised and easily transferable to live production. Judge every suggestion by whether it shortens that path.
+
+**Retail events.**
+
+| Built and running | Still needed for a funded, live book |
 |---|---|
-| `docs/PILOT_TECHNICAL_GUIDE.md` | Full architecture, all components, env vars |
-| `docs/cfo-report/Atticus_Foxify_Pilot_CFO_Report.md` | Economics, levers, regime breakdowns, watch list |
-| `docs/FOXIFY_PILOT_AGREEMENT_v2.md` | Current pilot agreement (PDF: `docs/pilot-agreement/Foxify_Protect_Pilot_v2.pdf`) |
-| `docs/pilot-reports/short_protection_logic_audit.md` | PR #75 audit; reference for SHORT-vs-LONG asymmetry decisions |
-| `docs/PILOT_DAILY_CHECKLIST.md` | Operational runbook |
-| `scripts/pilot-status` | 30-second daily health check |
-| `scripts/pilot-trade-investigate <id>` | Per-trade lifecycle deep-dive |
+| Dual-route pricer with fee-exact book walks, tail-charged routing across four venues, whitelist, mark-gap and far-out guards, minimum credit, EV ceiling, refusal reasons on the record | Venue agreements. Nothing is signed. The product runs as a browser extension (a third-party overlay, disclosed as such) or as a hosted app; a venue-embedded toggle needs a venue |
+| Live hedge rails: Kalshi direct (RSA key, V2 orders, subaccounts and shards) and via the ParlayX pod; dry-run, allowlist, per-order and per-day caps, kill switch, resend, lock reset; real fills on the record | Execution credentials and an order signer for every venue we hedge on; today Kalshi only (Polymarket US keys do not exist, ProphetX has no API relationship, Novig blocked on verification). One-leg refusal-and-unwind with a stated window, live (the shadow cannot show the gap because both legs are simulated) |
+| Shadow record since 2026-09-12 with early close, void handling, netting measured, last-leg parlays, in-game re-reads, held reference books, reference reads from Novig and STX, venue scoreboard, slates per brand | Daily reconciliation against each venue's fills and statements for a funded account; capital dashboard; alerting already exists (Telegram and webhook) |
+| STX member app: OAuth with PKCE, sealed tokens, member's own sale, combo RFQ, hosted page in STX's skin | STX real-money launch; combos beyond the last leg (venue limit) |
+| Embed demo, brand presets, Venue view, Parlays tab, in-play, funnel, business-card landing, videos | A decision on naming hedge venues publicly (off by default; Sam Schwartz of PM Markets advised the big venues will not like another name on their page, and that B2B-first venues like ProphetX are the smarter route) |
 
----
+Capital at shadow volumes is small (thousands, not hundreds of thousands). None of the live gaps needs new science; they need keys, agreements, counsel time and runbooks.
 
-## Critical Tech Details
+**Perps.** Pricing, execution (OKX, production-proven), shadow book with identity gap $0.00, retail and institutional skins, geofence. Needed: a partner venue ledger (Hyperliquid cannot collect the cap excess; one-way rail) and hedge margin. Parked.
 
-- **Stack:** Node.js + Fastify (`services/api`), TypeScript + React + Vite (`apps/web`), PostgreSQL on Render
-- **Deribit connector:** `services/connectors/src/deribitConnector.ts`
-- **Hedge manager:** `services/api/src/pilot/hedgeManager.ts` (runs every 60s)
-- **Trigger monitor:** `services/api/src/pilot/triggerMonitor.ts` (polls every 3s)
-- **Auto-renew:** `services/api/src/pilot/autoRenew.ts`
-- **Tests:** use `node:test` + `pg-mem` for DB simulation
-- **TS errors:** ~30 pre-existing in `routes.ts`/`db.ts`/`types.ts`. Do **NOT** introduce new ones. Verify with stash+rerun before committing.
+**Ted's lane.** Built in one week: BTC curve report (ladders vs the Deribit smile, vol tables, basis, crosses, latency, hedge replays), sports venues report, BTC pairs. The pairs page as of PR #396 (10 November, open at the time of writing): three tenors (the 15-minute up/down window on Kalshi `KXBTC15M` and Polymarket US `btc-updown-15m`, which share the price to beat to the cent; the next hourly close; the 5 PM ET daily), at the money and one strike each way, both books, gap with persistence, lock after fees, clean score, a realized-vol model column, the bands between strikes (Yes just below plus No just above, cheapest legs across venues after fees, against the venues' implied and the model), a regime gauge from the last 15 and 60 minutes of BRTI, one Launch per tenor that sends the picked pair (cleanest by default, or the row whose `use` was pressed), a send mode (POST JSON) and an open mode (his page with the pair in the query), `/pairs/api/*` JSON and an SSE stream. Needed from him: which mode his engine is (set `BTC_PAIRS_LAUNCH_URL` and `BTC_PAIRS_LAUNCH_MODE` on the curve service once he says), whether the payload shape fits his order path (`kalshi.id` and `poly.id` are what the venues' order endpoints take), and Polymarket US credentials only if rate limits bite (public endpoints return the same books).
 
-### Render Environment Variables (production set)
+## 7. Quant and structuring standards you are held to
 
-```
-DERIBIT_ENV=live
-DERIBIT_PAPER=false
-DERIBIT_CLIENT_ID=<set>
-DERIBIT_CLIENT_SECRET=<set>
-PILOT_VENUE_MODE=deribit_live
-PILOT_LIVE_START_DATE=2026-04-23T20:00:00Z
-PILOT_HEDGE_BUDGET_CAP_ENABLED=true
-PILOT_CIRCUIT_BREAKER_ENFORCE=true
-PILOT_CIRCUIT_BREAKER_MAX_LOSS_PCT=0.7
-PILOT_TP_GAP5_ENFORCE=true
-TREASURY_ENABLED=false
-PILOT_API_ENABLED=true
-PILOT_ADMIN_TOKEN=<set>
-```
+- **Fees are exact and venue-specific.** Kalshi taker fee is quadratic, 0.07 times a series multiplier on p(1 minus p) per contract (multiplier 1 on KXBTCD); Polymarket US uses the market's own coefficient (0.095 at Tier 1); Novig and ProphetX have their own schedules that often make Novig the cheapest hedge on singles. Every number shown to a trader is after fees at the size actually sitting on the book, walked level by level.
+- **Settlement parity before price.** A cross-venue hedge is only a hedge if both venues settle on the identical result. Sports: the whitelist and the rule table per league per venue (ties, postponements, voids, corrections) with a priced tail charge. Crypto: Kalshi KXBTCD and Polymarket US both settle on the BRTI 60-second average into the close with the same strike grids, so hourly and daily above/below are the same contract on two venues; year-end and other families are not necessarily, check the index.
+- **Vol and binaries.** A binary above/below is a digital; its fair value is the risk-neutral probability off the smile for the right expiry, not Black-Scholes at one vol. Near the close the hourly is priced off realized BRTI movement, not the option forward (an earlier version got this wrong and was fixed). One-sigma on BTC at 50% annualised is about $400 an hour and $200 a quarter-hour; carry that arithmetic in your head when you judge a band or a strike.
+- **Score is not edge.** A tradability score (tightness, depth, agreement) is separate from edge (gap, lock after fees). Never let a UI blur them.
+- **Identity first.** Any payoff change re-derives writer, holder and venue P&L at expiry and every early exit, in the docstring and the test, before code.
+- **Refusal is a feature.** Thin book, mark gap, far-out strike, credit below the line, EV cost above the ceiling, rails down, venue not confirmed: each refuses with a reason on the record. Never widen a gate to make a demo look busier without telling the founder what it costs.
+- **Integer cents, append-only, replay.** No float money. No edit in place. A reset is an archive beside the file, never a delete.
+- **Read within one cycle, not at one instant.** Two venues read seconds apart can show a cent of gap that is latency. Persistence over a window, not one reading, is what you call a quoting difference.
 
----
+## 8. Known issues and open decisions right now
 
-## What the User Likely Needs Next
+- Two pre-existing test failures on the event branch tip: `tests/eventCollarRetailShowcase.test.ts` (the allow-list gained `live` with in-play, PR #382, test not updated) and `tests/eventCollarShadowWorker.test.ts` (a needle on the operator view text). 505 of 507 pass. Fix both in the first PR you are assigned, or flag them if you are assigned elsewhere.
+- BTC pairs page (PR #396): one Launch per tenor, both modes built; the open decision is only which mode Ted's engine wants. Kalshi links default to the series page because the event URL pattern could not be confirmed from the build host (`BTC_PAIRS_KALSHI_URL`). Each venue lists the next 15-minute window only when the current one closes, so for about half a minute every quarter hour that section says no window is open; by design, not a bug. The pick a user chose with `use` falls back to the cleanest when spot walks the three-strike window past that row. The model column is a normal at the trailing hour's realized vol, not a smile; the curve report has the smile. Live on 10 November the 15-minute window showed Kalshi 90.5/91 against Polymarket US 80/81 on the same contract: the gaps Ted is after live on the shortest tenor, and the bands on the hourly cost 3 to 5 cents over the venues' own mids, which is the fee-and-spread haircut his thesis has to beat.
+- Ted's thesis as he wrote it on 9 November is a vertical on the binary ladder (Yes just below plus No just above equals a synthetic range contract), a short-volatility, defined-risk bet that the market already prices as the band's implied probability; his edge, if any, is in the contained-versus-trending regime call. The band row, the model column, the regime gauge, the band legs in the payload and the 15-minute tenor were built for exactly that reading (PR #396). Not built: anything that places an order; a smile-based model on the pairs page (the curve report carries it); a regime gauge from anything other than BRTI itself.
+- Event demo publicly says "best of 3 venues" without names; the operator and ledger keep every name. The founder has not decided whether to name them.
+- Novig account verification pending a driver's licence. Polymarket US and ProphetX have no execution path.
+- PR #396 (BTC pairs: 15-minute window, bands, model, regime, one Launch per tenor, send or open) and #392 (BTC curve 15-minute tiles) are open; #392 and #396 both add `fifteenLadderFrom` to `kalshiLadders.ts` with identical lines, so whichever merges second should merge clean. #380 (STX RFQ confirmations), #343 (healthz note) are open and small; #281, #237 are documents. Everything below #218 in the open list is history or belongs to the perp branch.
+- Two deploy branches have diverged by hundreds of commits; do not try to reconcile them.
+- Security debt: several admin tokens were pasted into chat during October deploy debugging. Recommend the founder rotates `EVENT_X_ADMIN_TOKEN` on both event services and any lock key that appeared in a message; never echo one back.
+- Deployment of `atticus-sports-venues` (PR #393) is not confirmed in the record; check the Render dashboard before pointing Ted at it. `/pairs` on `atticus-btc-curve` deploys with the merge of PR #395 (merged Nov 9).
 
-Pilot is in **observe-and-collect mode**. Real work is gated on:
-- CEO responses to outstanding questions (use case, tenor preference)
-- More live trade data (need n≥5 SHORT triggers, n≥10 LONG triggers)
-- Treasury platform launch (separate workstream)
+## 9. Where the money comes from, and where it does not
 
-**Don't initiate new architecture without user direction.** If asked for analysis on something: give honest assessment, identify trade-offs, propose options, ask user to choose. **Don't decide unilaterally on anything financial.**
+- Retail events: the published take on the credit (about 1% of stake) plus a venue revenue share. Netting across both sides of a game lowers hedge cost as the book grows (measured 1.7% of hedge cost on the record, 161% of take at the time). Atticus never earns from a user losing.
+- STX member sale: nothing today. The founder accepted that for the Launch Program as proof of concept; a fee needs a venue agreement.
+- Institutional with Ted: undefined. Candidates: a licence or a share of what his engine does with our signals, a collaboration where his network's capital funds a book we price and he executes. Do not propose a structure to Ted without the founder.
+- Perps: 20% of credits sourced in the current pitch material (older material says 25% or 10%; the sheet carries the current figure).
 
----
+## 10. Working rules on this repo
 
-## When Starting a Session
+- Run the touched test files before every push; keep `eventCollar*`, `btc*`, `sports*` green and the two failures above are the only ones allowed until fixed.
+- Pages: server-rendered, no frameworks, no external assets, body re-fetches itself, `?k=` token gating where the service has one, `/healthz` warm gates, fail-closed cross-links.
+- New hosted things go on an existing service under a path. Costs are watched.
+- Commit small, one logical change per commit, descriptive messages in the house style (lower-case subject naming the surface, then what changed and why). The founder merges and deploys; tell him exactly which PR to merge and which Render service redeploys, every time.
+- Screenshots and shell output as evidence for anything you claim works.
+- When you write for Ted, a venue or an investor: pragmatic disclosure, every claim checkable, no venue named that the founder has not cleared, no em dashes.
 
-```bash
-# 1. Sync to active branch
-cd /workspace
-git fetch origin --prune
-git checkout origin/cursor/-bc-3aa2d238-ebb4-479a-98c7-2ade2838103f-6425 -B cursor/-bc-3aa2d238-ebb4-479a-98c7-2ade2838103f-6425
+## 11. What the founder wants from you, in his words
 
-# 2. (User-side) Run platform health check
-./scripts/pilot-status
+"Make sure we always are looking at the best available strategy and mechanics." "The main focus is that our demos for event and perps are optimized and easily transferable to live production." "There is a lot of old, stale or irrelevant code, versions, branches and unessential elements in our git and I definitely don't want to waste tokens or energy on anything that is not essential." "All responses should be direct, as simple to understand as possible without omitting anything and in real world terms." Reports high level; improvement suggestions detailed.
 
-# 3. Read docs/PILOT_TECHNICAL_GUIDE.md §1-3 for fast architecture context
-```
+## 12. Your first reply, then a hard stop
 
-**Always wait for user to specify today's focus before starting code work.** If unsure about anything, ask the user. Don't guess on financial product decisions.
+Reply with, in this order, and nothing else:
 
----
+1. **Summary.** The product in your own words (the credit, the identity, the hedge route, the member-sale shape), the three lanes and how they stay separate, the live surfaces and the branch feeding each, the company's stage (self-funded, pre-seed outreach, one real lock settled, shadow records, STX Launch Program, ParlayX and Prospect threads, Ted), and who the founder is in two sentences.
+2. **Grades, A to F, one line of reasoning each,** against the objective of a live, funded, venue-embedded retail protection product: product (does the card do the job with nothing to manage), proof (do the records and real locks carry the claim), path to live for events (biggest single blocker), distribution (are the right venues being sold in the right order), capital (is the ask sized and worded right, and does the Ted lane change it), regulatory posture, code health (from the map and the two failing tests, not a crawl), and the Ted lane (is it worth the founder's time and what would make it pay).
+3. **Where it is strong.** Short.
+4. **Where to improve.** Detailed: each item names the lane, the files, the exact change, the reason in real-world terms, what it does not change, and the risk. Candidates the founder already has in mind: the two failing tests; Ted's answer on send versus open and whether the payload fits his order path; one-leg refusal-and-unwind window for live cross-venue; Novig verification and ProphetX API as execution paths; the venue-naming decision; a Prospect Markets one-pager with in-play as the lead; STX real-money readiness. Form your own view; do not just repeat this list. Rank by distance-to-live shortened per unit of work.
+5. **Feedback.** What you believe is wrong, stale or inconsistent in this handoff, with evidence from the files.
+6. **Questions** only where the answer changes what you would build, each with your default assumption.
 
-## Update Protocol
-
-When this file becomes stale, update these sections:
-1. **Last Updated** date at the top
-2. **Active Pilot Day** counter
-3. **Recent Activity** table (add new PRs, drop entries older than ~7 days if list grows past 15)
-4. **Critical Design Decisions** if any are revised (preserve old ones — strike through, don't delete)
-5. **Open Questions** — add new ones, remove resolved ones
-
-Goal: keep this under ~3 pages. If it grows past that, we're carrying history that should live in the repo commits/docs instead.
+Then wait. The founder will confirm, correct, or assign. No changes until he does.

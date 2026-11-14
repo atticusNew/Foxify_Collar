@@ -1,0 +1,236 @@
+/**
+ * The venue scoreboard: the record folded by New York week into the hedger's comparison of the
+ * venues (other side won, edge over the runner-up, availability when asked, refusals), singles
+ * and parlays, real taps apart from simulated positions, nothing of the writer's book.
+ */
+import assert from "node:assert/strict";
+import { test } from "node:test";
+
+import type { HedgeRouting, RoutedRoute, SettlementVenue } from "../src/eventCollar/crossVenue/hedgeRouting";
+import type { LastLegTicket } from "../src/eventCollar/crossVenue/lastLeg";
+import type { ShadowPosition } from "../src/eventCollar/crossVenue/shadowLedger";
+import type { RefusalMap } from "../src/eventCollar/crossVenue/shadowRefusals";
+import type { HedgeRoute } from "../src/eventCollar/crossVenue/types";
+import { renderScoreboardHtml } from "../scripts/eventScoreboardHtml";
+import { letterScoreboardVenues, SCOREBOARD_METHODOLOGY, SCOREBOARD_METHODOLOGY_LETTERED, venueFeeCentsPerUnit, venueFeeOnHedge, venueScoreboard, venueScoreboardCsv, weekLabel, weekMondayOf } from "../src/eventCollar/crossVenue/venueScoreboard";
+
+const NOW = new Date("2026-11-02T18:00:00.000Z"); // Monday Nov 2, 1pm ET
+
+function position(over: Partial<ShadowPosition> & { ticker: string; at: string; route: HedgeRoute }): ShadowPosition {
+  return {
+    kind: "sports",
+    league: "nfl",
+    sideName: "Ravens",
+    eventTitle: "Jaguars at Ravens",
+    eventTimeIso: "2026-11-06T01:15:00.000Z",
+    contracts: 100,
+    markCents: 62,
+    floorCents: 40,
+    capCents: 85,
+    creditCents: 300,
+    evCostBps: 100,
+    feesCents: 10,
+    takeCents: 50,
+    status: "open",
+    ...over,
+  } as ShadowPosition;
+}
+
+const routed = (hedgeVenue: SettlementVenue, ok: boolean, creditCents: number | null, allInBps: number | null): RoutedRoute =>
+  ({ route: hedgeVenue === "kalshi" ? "kalshi_self" : hedgeVenue, hedgeVenue, ok, evCostBps: allInBps, tailChargeBps: 0, allInBps, creditCents, terms: ok ? { floorCents: 40, capCents: 85 } : null, compatible: true, sameContract: hedgeVenue === "kalshi", gates: {} as RoutedRoute["gates"], mismatches: [] }) as RoutedRoute;
+const routing = (routes: RoutedRoute[]): HedgeRouting => ({ routes } as unknown as HedgeRouting);
+
+const ticket = (quote: Record<string, unknown> | undefined, league = "nfl"): LastLegTicket => ({ ticketId: "t", legs: [{ league: "nba" }, { league }], quote } as unknown as LastLegTicket);
+
+test("weeks are Monday to Sunday in New York; a Sunday night in UTC's Monday stays in its week; labels read as the industry writes them", () => {
+  assert.equal(weekMondayOf(Date.parse("2026-10-27T20:00:00Z")), "2026-10-26");
+  assert.equal(weekMondayOf(Date.parse("2026-11-02T03:30:00Z")), "2026-10-26", "Sunday 10:30pm ET is still the week of Oct 26");
+  assert.equal(weekMondayOf(Date.parse("2026-11-02T06:00:00Z")), "2026-11-02", "Monday 1am ET is the new week");
+  assert.equal(weekLabel("2026-10-19"), "Week of Oct 19 to 25");
+  assert.equal(weekLabel("2026-10-26"), "Week of Oct 26 to Nov 1");
+});
+
+test("venueScoreboard: other side by venue weighted by contracts, the winner's edge over the runner-up, availability when asked, refusals by week, taps apart, parlays by the router's venue", () => {
+  const positions: ShadowPosition[] = [
+    position({ ticker: "BAL", at: "2026-10-27T20:00:00.000Z", route: "novig", contracts: 100, routing: routing([routed("novig", true, 300, 120), routed("kalshi", true, 240, 200), routed("polymarket", true, 250, 180), routed("prophetx", false, null, null)]) }),
+    position({ ticker: "LAL", at: "2026-11-02T03:30:00.000Z", route: "kalshi_self", league: "nba", contracts: 50, routing: routing([routed("kalshi", true, 100, 150), routed("novig", false, null, null)]) }),
+    position({ ticker: "SF", at: "2026-10-20T20:00:00.000Z", route: "polymarket", contracts: 200, source: "lock", hedgeCostCents: 7000 }),
+    position({ ticker: "OLD", at: "2026-09-01T20:00:00.000Z", route: "polymarket", contracts: 10 }),
+  ];
+  const refusals: RefusalMap = {
+    DEN: { ticker: "DEN", kind: "sports", league: "nfl", sideName: "Broncos", eventTimeIso: "", code: "protection_too_rich", firstAt: "2026-10-29T12:00:00.000Z", lastAt: "2026-10-30T12:00:00.000Z", times: 3 },
+    BAL: { ticker: "BAL", kind: "sports", league: "nfl", sideName: "Ravens", eventTimeIso: "", code: "credit_too_small", firstAt: "2026-10-26T12:00:00.000Z", lastAt: "2026-10-26T12:00:00.000Z", times: 1 },
+    ARS: { ticker: "ARS", kind: "sports", league: "epl", sideName: "Arsenal", eventTimeIso: "", code: "no_matched_market", firstAt: "2026-10-21T12:00:00.000Z", lastAt: "2026-10-21T12:00:00.000Z", times: 1 },
+  };
+  const tickets: LastLegTicket[] = [
+    ticket({ ok: true, at: "2026-10-30T20:00:00.000Z", contracts: 66, route: "novig", hedgeCostCents: 2500 }),
+    ticket({ ok: true, at: "2026-10-30T21:00:00.000Z", contracts: 20 }),
+    ticket({ ok: false, at: "2026-10-30T21:00:00.000Z", contracts: 0, code: "no_matched_market" }),
+    ticket(undefined),
+  ];
+  const sb = venueScoreboard({ positions, refusals, tickets, now: NOW, weeks: 3 });
+  assert.equal(sb.live, true);
+  assert.equal(sb.methodology, SCOREBOARD_METHODOLOGY);
+  assert.deepEqual(sb.venues, ["Kalshi", "Polymarket", "ProphetX", "Novig"]);
+  assert.deepEqual(sb.weeks.map((w) => w.from), ["2026-11-02", "2026-10-26", "2026-10-19"], "this week first, back to the number of weeks asked");
+
+  const [thisWeek, last, before] = sb.weeks;
+  assert.equal(thisWeek.n, 0, "nothing yet this week");
+  assert.equal(thisWeek.refusals.refusedPct, null);
+
+  assert.equal(last.label, "Week of Oct 26 to Nov 1");
+  assert.equal(last.n, 4, "two singles and two priced parlay tickets");
+  assert.equal(last.taps, 0);
+  assert.equal(last.contracts, 236);
+  assert.equal(last.notionalCents, 2500, "the other side bought, where the record priced it");
+  assert.deepEqual(last.singles.otherSide, [
+    { venue: "Novig", n: 1, contracts: 100, sharePct: 66.7 },
+    { venue: "Kalshi", n: 1, contracts: 50, sharePct: 33.3 },
+  ]);
+  assert.deepEqual(last.parlays, { n: 2, contracts: 86, otherSide: [{ venue: "Novig", n: 1, contracts: 66, sharePct: 100 }], unrouted: 1 });
+  assert.deepEqual(last.edge, { n: 1, byVenue: [{ venue: "Novig", n: 1, avgEdgeCentsPerContract: 0.5, avgEdgeAllInBps: 60 }] }, "Novig paid 50c more than Polymarket's 250 on 100 contracts; 60 bps cheaper all in");
+  assert.deepEqual(
+    last.fees,
+    { n: 3, byVenue: [{ venue: "Novig", n: 2, avgFeeCentsPerContract: 0 }, { venue: "Kalshi", n: 1, avgFeeCentsPerContract: 0.91 }] },
+    "Novig charges nothing pre-game on the single and the parlay; Kalshi's 7·P·(1−P) at 38c on 27.5 NO units of the 50-contract position is 0.91c a contract",
+  );
+  assert.deepEqual(last.availability, {
+    n: 2,
+    byVenue: [
+      { venue: "Kalshi", asked: 2, priced: 2, pricedPct: 100 },
+      { venue: "Novig", asked: 2, priced: 1, pricedPct: 50 },
+      { venue: "Polymarket", asked: 1, priced: 1, pricedPct: 100 },
+      { venue: "ProphetX", asked: 1, priced: 0, pricedPct: 0 },
+    ],
+  });
+  assert.deepEqual(last.refusals, { refused: 1, offered: 2, priced: 3, refusedPct: 33.3, byReason: [{ reason: "too rich to offer", count: 1 }] }, "a refused market the record later quoted (BAL) is not a refusal");
+  assert.deepEqual(last.byLeague.map((l) => [l.league, l.n, l.contracts]), [["nfl", 2, 166], ["nba", 1, 50]], "a parlay counts under its last pick's league");
+  assert.deepEqual(last.byLeague[0].otherSide, [{ venue: "Novig", n: 2, contracts: 166, sharePct: 100 }]);
+  assert.deepEqual(last.byLeague[1].availability, [{ venue: "Kalshi", asked: 1, priced: 1, pricedPct: 100 }, { venue: "Novig", asked: 1, priced: 0, pricedPct: 0 }]);
+
+  assert.equal(before.label, "Week of Oct 19 to 25");
+  assert.equal(before.n, 1);
+  assert.equal(before.taps, 1, "a real holder's lock is counted apart");
+  assert.equal(before.notionalCents, 7000);
+  assert.deepEqual(before.singles.otherSide, [{ venue: "Polymarket", n: 1, contracts: 200, sharePct: 100 }]);
+  assert.deepEqual(before.edge, { n: 0, byVenue: [] }, "no route verdicts on the record: no edge claimed");
+  assert.deepEqual(before.fees, { n: 1, byVenue: [{ venue: "Polymarket", n: 1, avgFeeCentsPerContract: 0.05 }] }, "Polymarket's fee is the record's: 10c over 200 contracts");
+  assert.deepEqual(sb.feeRules.map((r) => r.venue), ["Kalshi", "Polymarket", "ProphetX", "Novig"]);
+  assert.ok(sb.feeRules.every((r) => r.rule.length > 20 && /^\d{4}-\d{2}-\d{2}$/.test(r.asOf)));
+  assert.deepEqual(before.refusals.byReason, [{ reason: "not a market we lock in", count: 1 }]);
+
+  // nothing of the writer's book, and no holder, anywhere in the table
+  const keys = new Set<string>();
+  const walk = (o: unknown): void => {
+    if (Array.isArray(o)) o.forEach(walk);
+    else if (o && typeof o === "object") for (const [k, v] of Object.entries(o)) { keys.add(k); walk(v); }
+  };
+  walk(sb);
+  for (const k of ["takeCents", "takeShareCents", "writerCents", "writerPnlCents", "holderDeltaCents", "holder", "feesCents", "evCostBps", "hedgeCostCents", "route"]) assert.equal(keys.has(k), false, k);
+  assert.equal(/writer|holder|take/i.test(JSON.stringify(sb).replace(SCOREBOARD_METHODOLOGY, "")), false, "no writer-side words outside the methodology, the fee rules included");
+});
+
+test("venueFeeOnHedge: each venue's schedule at the price the other side was bought at, per contract of the position", () => {
+  assert.equal(venueFeeCentsPerUnit("kalshi", 50), 1.75);
+  assert.equal(venueFeeCentsPerUnit("prophetx", 60), 0.8);
+  assert.equal(venueFeeCentsPerUnit("novig", 50), 0);
+  assert.equal(venueFeeCentsPerUnit("polymarket", 50), null, "not a formula of the price: read off the record");
+  // 100 contracts, 55 NO units bought at 40c: Kalshi 7·0.4·0.6 = 1.68c a unit → 0.924c a contract
+  assert.equal(round(venueFeeOnHedge("kalshi", { contracts: 100, units: 55, hedgeCostCents: 2200, markCents: 62, feesCents: 0 })), 0.924);
+  // ProphetX, same hedge: 2 × 0.6 = 1.2c a unit → 0.66c a contract
+  assert.equal(round(venueFeeOnHedge("prophetx", { contracts: 100, units: 55, hedgeCostCents: 2200, markCents: 62, feesCents: 0 })), 0.66);
+  // no hedge cost on the record: price from the mark (38c), units from the contracts
+  assert.equal(round(venueFeeOnHedge("kalshi", { contracts: 100, units: 0, markCents: 62 })), round(7 * 0.38 * 0.62));
+  assert.equal(venueFeeOnHedge("polymarket", { contracts: 100, units: 55, hedgeCostCents: 2200, markCents: 62, feesCents: 30 }), 0.3);
+  assert.equal(venueFeeOnHedge("polymarket", { contracts: 100, units: 55, hedgeCostCents: 2200, markCents: 62 }), null);
+  assert.equal(venueFeeOnHedge("novig", { contracts: 0, units: 0, markCents: 62 }), null);
+});
+
+const round = (x: number | null): number | null => (x === null ? null : Math.round(x * 1000) / 1000);
+
+test("renderScoreboardHtml: the same table as a page — a card per week with a row per venue (shares, edge, fee, availability), the fee schedules, the methodology, JSON and CSV links; nothing of the writer's book", () => {
+  const positions: ShadowPosition[] = [
+    position({ ticker: "BAL", at: "2026-10-27T20:00:00.000Z", route: "novig", contracts: 100, routing: routing([routed("novig", true, 300, 120), routed("kalshi", true, 240, 200)]) }),
+    position({ ticker: "LAL", at: "2026-10-28T20:00:00.000Z", route: "kalshi_self", league: "nba", contracts: 50, source: "lock", eventTitle: "<Lakers> & Celtics" }),
+  ];
+  const sb = venueScoreboard({ positions, refusals: {}, tickets: [ticket({ ok: true, at: "2026-10-30T20:00:00.000Z", contracts: 66, route: "novig", hedgeCostCents: 2500 })], now: NOW, weeks: 2 });
+  const html = renderScoreboardHtml({ scoreboard: sb, weeks: 2 });
+  assert.ok(html.startsWith("<!doctype html>"));
+  assert.ok(html.includes("Week of Oct 26 to Nov 1"));
+  assert.ok(html.includes("Week of Nov 2 to 8"));
+  assert.ok(html.includes("Nothing on the record this week."), "an empty week says so instead of an empty table");
+  assert.ok(html.includes("3 positions (2 singles, 1 parlay) · 216 contracts · $25 of the other side bought · 1 real tap."));
+  assert.ok(html.includes('<td class="v">Novig</td><td class="hi">66.7%<i>1 win</i></td><td class="hi">100%<i>1 win</i></td><td class="hi">0.60¢<i>80 bps all in · n 1</i></td><td>0.00¢<i>n 2</i></td><td>100%<i>1 of 1 asked</i></td>'));
+  assert.ok(html.includes('<td class="v">Kalshi</td><td class="hi">33.3%<i>1 win</i></td><td>n/a</td><td>n/a</td><td>0.91¢<i>n 1</i></td><td>100%<i>1 of 1 asked</i></td>'));
+  assert.ok(html.includes("By league: <b>NFL</b> 2 positions (Novig 100%) · <b>NBA</b> 1 position (Kalshi 100%)."));
+  assert.ok(html.includes('href="/api/shadow/scoreboard?weeks=2"') && html.includes('href="/api/shadow/scoreboard.csv?weeks=2" download'));
+  for (const r of sb.feeRules) assert.ok(html.includes(r.rule.replace(/&/g, "&amp;")), r.venue);
+  assert.ok(html.includes(SCOREBOARD_METHODOLOGY.replace(/'/g, "'").replace(/&/g, "&amp;").replace(/"/g, "&quot;")));
+  assert.equal(html.includes("<Lakers>"), false, "nothing from the record is placed in the page unescaped");
+  assert.equal(/writer|holder|take/i.test(html.replace(SCOREBOARD_METHODOLOGY, "")), false, "no writer-side words outside the methodology");
+  assert.equal(/<script/i.test(html), false, "server-rendered, no script");
+});
+
+test("the public view: the same table with every venue lettered and the fee schedules left out, on the page, the JSON and the CSV; the figures are the named table's", () => {
+  const positions: ShadowPosition[] = [
+    position({ ticker: "BAL", at: "2026-10-27T20:00:00.000Z", route: "novig", contracts: 100, routing: routing([routed("novig", true, 300, 120), routed("kalshi", true, 240, 200), routed("polymarket", true, 250, 180), routed("prophetx", false, null, null)]) }),
+    position({ ticker: "LAL", at: "2026-10-28T20:00:00.000Z", route: "kalshi_self", league: "nba", contracts: 50, source: "lock" }),
+    position({ ticker: "SF", at: "2026-10-29T20:00:00.000Z", route: "polymarket", contracts: 200, hedgeCostCents: 7000 }),
+  ];
+  const named = venueScoreboard({ positions, refusals: {}, tickets: [ticket({ ok: true, at: "2026-10-30T20:00:00.000Z", contracts: 66, route: "prophetx", hedgeCostCents: 2500 })], now: NOW, weeks: 2 });
+  const pub = letterScoreboardVenues(named);
+  const NAMES = /kalshi|polymarket|prophetx|novig|parlayx|stx/i;
+  assert.equal(NAMES.test(JSON.stringify(named)), true, "the named table names them, so the check below is a check");
+
+  assert.deepEqual([named.venuesNamed, pub.venuesNamed], [true, false]);
+  assert.deepEqual(pub.venues, ["Venue A", "Venue B", "Venue C", "Venue D"], "a letter per venue, the same every week");
+  assert.deepEqual(named.venues.map((v, i) => [v, pub.venues[i]]), [["Kalshi", "Venue A"], ["Polymarket", "Venue B"], ["ProphetX", "Venue C"], ["Novig", "Venue D"]]);
+  assert.deepEqual(pub.feeRules, [], "a schedule's formula says whose it is");
+  assert.equal(pub.methodology, SCOREBOARD_METHODOLOGY_LETTERED);
+  assert.notEqual(SCOREBOARD_METHODOLOGY_LETTERED, SCOREBOARD_METHODOLOGY, "the sentence that points at the schedules is the one that changes");
+  assert.equal(SCOREBOARD_METHODOLOGY_LETTERED.includes("feeRules"), false);
+
+  // nothing of a name anywhere in the three public forms
+  const html = renderScoreboardHtml({ scoreboard: pub, weeks: 2 });
+  const csv = venueScoreboardCsv(pub);
+  for (const [what, text] of [["json", JSON.stringify(pub)], ["page", html], ["csv", csv]] as const) assert.equal(NAMES.test(text), false, `${what}: ${NAMES.exec(text)?.[0]}`);
+  assert.ok(html.includes("Public. The venues are lettered, not named.") && html.includes("The venues' names and their fee schedules are left out of the public view"));
+  assert.ok(html.includes('<td class="v">Venue D</td>') && html.includes('<td class="v">Venue A</td>'));
+  assert.equal(/writer|holder|take/i.test(html.replace(SCOREBOARD_METHODOLOGY_LETTERED, "")), false, "no writer-side words outside the methodology");
+  assert.ok(renderScoreboardHtml({ scoreboard: named, weeks: 2 }).includes("Venues named: this is the operator's view"));
+
+  // every figure is the named table's: put the names back and the two tables are one
+  const back = new Map(pub.venues.map((letter, i) => [letter, named.venues[i]]));
+  const unletter = (rows: Array<{ venue: string }>): unknown => rows.map((r) => ({ ...r, venue: back.get(r.venue) }));
+  pub.weeks.forEach((w, i) => {
+    const n = named.weeks[i];
+    assert.deepEqual(unletter(w.singles.otherSide), n.singles.otherSide);
+    assert.deepEqual(unletter(w.parlays.otherSide), n.parlays.otherSide);
+    assert.deepEqual(unletter(w.edge.byVenue), n.edge.byVenue);
+    assert.deepEqual(unletter(w.fees.byVenue), n.fees.byVenue);
+    assert.deepEqual(unletter(w.availability.byVenue), n.availability.byVenue);
+    assert.deepEqual(w.byLeague.map((l) => [l.league, l.n, unletter(l.otherSide), unletter(l.availability)]), n.byLeague.map((l) => [l.league, l.n, l.otherSide, l.availability]));
+    assert.deepEqual([w.n, w.taps, w.contracts, w.notionalCents, w.refusals], [n.n, n.taps, n.contracts, n.notionalCents, n.refusals]);
+  });
+  assert.ok(named.weeks.some((w) => w.singles.otherSide.length >= 3 && w.parlays.otherSide.length >= 1 && w.byLeague.length >= 2), "the fixture has rows in every cut that carries a venue");
+
+  // a name the function does not know is never passed through
+  const odd = letterScoreboardVenues({ ...named, venues: [...named.venues, "NewVenue"], weeks: named.weeks.map((w) => ({ ...w, singles: { ...w.singles, otherSide: [{ venue: "NewVenue", n: 1, contracts: 1, sharePct: 100 }] } })) });
+  assert.equal(odd.venues.at(-1), "Venue ?");
+  assert.equal(JSON.stringify(odd).includes("NewVenue"), false);
+});
+
+test("venueScoreboardCsv: an all row per week with totals and refusals, a row per venue with shares, edge and availability", () => {
+  const positions: ShadowPosition[] = [
+    position({ ticker: "BAL", at: "2026-10-27T20:00:00.000Z", route: "novig", contracts: 100, routing: routing([routed("novig", true, 300, 120), routed("kalshi", true, 240, 200)]) }),
+  ];
+  const sb = venueScoreboard({ positions, refusals: {}, tickets: [], now: NOW, weeks: 2 });
+  const csv = venueScoreboardCsv(sb);
+  const lines = csv.trim().split("\n");
+  assert.equal(lines[0], "week_from,week_to,week,venue,positions,taps,contracts,other_side_notional_cents,singles_won,singles_contracts,singles_share_pct,parlays_won,parlays_contracts,parlays_share_pct,edge_n,avg_edge_cents_per_contract,avg_edge_all_in_bps,fee_n,avg_fee_cents_per_contract,asked,priced,priced_pct,refused,markets_priced,refused_pct");
+  assert.equal(lines[1], "2026-11-02,2026-11-08,Week of Nov 2 to 8,all,0,0,0,0,0,0,100,0,0,100,0,,,0,,0,,,0,0,");
+  assert.equal(lines[2], "2026-10-26,2026-11-01,Week of Oct 26 to Nov 1,all,1,0,100,0,1,100,100,0,0,100,1,,,1,,1,,,0,1,0");
+  assert.equal(lines[3], "2026-10-26,2026-11-01,Week of Oct 26 to Nov 1,Kalshi,,,,,0,0,0,0,0,0,0,,,0,,1,1,100,,,");
+  assert.equal(lines[4], "2026-10-26,2026-11-01,Week of Oct 26 to Nov 1,Novig,,,,,1,100,100,0,0,0,1,0.6,80,1,0,1,1,100,,,");
+  assert.equal(lines.length, 5, "venues never asked and never winning have no row");
+});

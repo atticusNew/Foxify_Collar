@@ -1,0 +1,376 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import {
+  computeTake,
+  enumerateCollars,
+  refuseUnfunded,
+  selectTiers,
+  TIER_RULES,
+  tierCreditLineCents,
+  type HedgeProbe,
+} from "../src/eventCollar/crossVenue/collarSearch";
+import { applyMinimumCredit, minimumCreditCents } from "../src/eventCollar/crossVenue/minimumCredit";
+import { quoteLadderWrap, type NoAskLevel } from "../src/eventCollar/crossVenue/kalshiLadder";
+import { quoteCrossWrap } from "../src/eventCollar/crossVenue/crossVenuePricer";
+import {
+  DEFAULT_CROSS_CONFIG,
+  PROTECTION_TIERS,
+  type CollarTerms,
+  type CrossSearchConfig,
+  type MatchedPair,
+  type PmBook,
+} from "../src/eventCollar/crossVenue/types";
+
+const GAME_START = new Date("2026-09-13T18:20:00Z");
+
+/**
+ * The grid the hand-checked figures below were worked on: 30c under the mark to 25c over it, the
+ * balanced tier heading the quote. The shipped defaults reach 45c either side and head the quote
+ * with the most upside; those are tested on their own at the end of this file.
+ */
+const LEGACY_CONFIG: CrossSearchConfig = {
+  ...DEFAULT_CROSS_CONFIG,
+  floorOffsetsCents: [3, 5, 8, 10, 12, 15, 20, 25, 30],
+  capOffsetsCents: [3, 4, 5, 6, 8, 10, 12, 15, 20, 25],
+  defaultTier: "balanced",
+};
+const NOW = new Date(GAME_START.getTime() - 6 * 3_600_000);
+
+/** A real-looking Kalshi No side at mark 60: fair 40c, asks 41/42/43 with modest depth. */
+const PROD_NO_ASKS: NoAskLevel[] = [
+  { priceCents: 41, qtyMilli: 100_000 },
+  { priceCents: 42, qtyMilli: 300_000 },
+  { priceCents: 43, qtyMilli: 900_000 },
+];
+
+function ladder(overrides: Partial<Parameters<typeof quoteLadderWrap>[0]> = {}) {
+  return quoteLadderWrap({
+    pair: { kalshi: { ticker: "KXMLBGAME-26SEP131420PITCHC-PIT" }, gameStartTime: GAME_START.toISOString() },
+    markCents: 60,
+    entryCents: 55,
+    contracts: 150,
+    now: NOW,
+    noAsks: PROD_NO_ASKS,
+    config: LEGACY_CONFIG,
+    ...overrides,
+  });
+}
+
+// ---------------------------------------------------------------- fee rule
+
+test("computeTake: max(share, minimum), share rounds down, minimum rounds up, de minimis waives", () => {
+  const cfg = { takeBps: 1000, minTakeBpsOfStake: 25, deMinimisTakeCents: 5 };
+  // 150 contracts: minimum = ceil(15000 * 25 / 10000) = ceil(37.5) = 38c
+  let t = computeTake(78, 150, cfg);
+  assert.deepEqual(t, { takeCents: 38, takeShareCents: 7, takeMinimumCents: 38, takeRule: "minimum", takeWaived: false });
+  // share wins once gross is large: 10% of 812 = 81 > 38
+  t = computeTake(812, 150, cfg);
+  assert.deepEqual(t, { takeCents: 81, takeShareCents: 81, takeMinimumCents: 38, takeRule: "share", takeWaived: false });
+  // one contract: minimum = ceil(100 * 25 / 10000) = 1c, share floor(0.3) = 0 -> 1c < 5c de minimis -> waived
+  t = computeTake(3, 1, cfg);
+  assert.deepEqual(t, { takeCents: 0, takeShareCents: 0, takeMinimumCents: 1, takeRule: "waived", takeWaived: true });
+  // minimum disabled reproduces the old share-only rule exactly
+  t = computeTake(78, 150, { ...cfg, minTakeBpsOfStake: 0 });
+  assert.deepEqual(t, { takeCents: 7, takeShareCents: 7, takeMinimumCents: 0, takeRule: "share", takeWaived: false });
+});
+
+test("enumerateCollars: a positive gross eaten by the minimum fee is counted, not offered", () => {
+  // Every collar funds exactly 20c gross; the 38c minimum on 150 contracts eats it.
+  const hedgeFor = (digitalCents: number): HedgeProbe => ({
+    ok: true,
+    costCents: 0,
+    feesCents: 0,
+    hedge: {
+      action: "buy",
+      venue: "kalshi",
+      outcome: "No",
+      ticker: "T",
+      contractsMilli: digitalCents * 10,
+      avgPriceCents: 0,
+      worstPriceCents: 0,
+      costCents: 0,
+    },
+  });
+  const cfg: CrossSearchConfig = {
+    ...DEFAULT_CROSS_CONFIG,
+    // one collar only: floor mark-3, cap mark+3 -> funding (100-63)*150 = 5550
+    floorOffsetsCents: [3],
+    capOffsetsCents: [3],
+  };
+  // make the hedge cost funding - 20 so gross is 20c
+  const search = enumerateCollars({
+    markCents: 60,
+    contracts: 150,
+    config: cfg,
+    hedgeFor: (d) => {
+      const probe = hedgeFor(d);
+      return probe.ok ? { ...probe, costCents: 5550 - 20 } : probe;
+    },
+  });
+  assert.equal(search.candidates.length, 0);
+  assert.equal(search.feeEaten, 1);
+  assert.equal(search.bestShortfallCents, Number.POSITIVE_INFINITY);
+  const refusal = refuseUnfunded(search, cfg, {
+    shortfall: "s",
+    thin: "kalshi_book_too_thin",
+    thinDetail: "t",
+    none: "n",
+  });
+  assert.equal(refusal.code, "credit_nonpositive");
+  assert.match(refusal.detail, /minimum fee \(25 bps of stake\)/);
+  // with the minimum off, the same collar is offered with the take waived (2c < 5c)
+  const shareOnly = enumerateCollars({
+    markCents: 60,
+    contracts: 150,
+    config: { ...cfg, minTakeBpsOfStake: 0 },
+    hedgeFor: (d) => {
+      const probe = hedgeFor(d);
+      return probe.ok ? { ...probe, costCents: 5550 - 20 } : probe;
+    },
+  });
+  assert.equal(shareOnly.candidates.length, 1);
+  assert.equal(shareOnly.candidates[0].takeRule, "waived");
+  assert.equal(shareOnly.candidates[0].creditCents, 20);
+});
+
+// ------------------------------------------------------------------- tiers
+
+test("tiers on a production-like No side: three distinct collars on the floor axis, hand-checked", () => {
+  const q = ladder();
+  assert.ok(q.ok, JSON.stringify(q));
+  assert.equal(q.tier, "balanced");
+  assert.equal(q.candidatesConsidered, 24);
+  assert.deepEqual(Object.keys(q.tiers), ["tight", "balanced", "wide"]);
+  const t = q.tiers.tight as CollarTerms;
+  const b = q.tiers.balanced as CollarTerms;
+  const w = q.tiers.wide as CollarTerms;
+
+  // tight = highest fundable floor (48 = mark-12; floor 50 leaves gross negative on every cap):
+  //   digital (48+100-63)=85c x 150 = 12750c -> 127,500 milli No
+  //   walk: 100,000 @41 + 27,500 @42 = 5,255,000 milli-cents -> 5255c
+  //   fees: ceil(7*100000*41*59/1e7)=170 + ceil(7*27500*42*58/1e7)=47 -> 217c
+  //   funding 37*150 = 5550; gross = 5550-5255-217 = 78c
+  //   take = max(floor(7.8)=7, ceil(15000*25/10000)=38) = 38 (minimum rule); credit 40c
+  //   EV: naked 900,000; protected (63*150+40)*60 + (48*150+40)*40 = 859,000 -> 456 bps
+  assert.equal(t.floorCents, 48);
+  assert.equal(t.capCents, 63);
+  assert.equal(t.hedge.venue === "kalshi" && t.hedge.contractsMilli, 127_500);
+  assert.equal(t.hedge.costCents, 5255);
+  assert.equal(t.feesCents, 217);
+  assert.equal(t.grossCreditCents, 78);
+  assert.deepEqual(
+    { take: t.takeCents, share: t.takeShareCents, min: t.takeMinimumCents, rule: t.takeRule },
+    { take: 38, share: 7, min: 38, rule: "minimum" },
+  );
+  assert.equal(t.creditCents, 40);
+  assert.equal(t.evCostBps, 456);
+
+  // wide = lowest floor offered (30 = mark-30) with the highest fundable cap there
+  assert.equal(w.floorCents, 30);
+  assert.equal(w.capCents, 75);
+  assert.equal(w.creditCents, 189);
+  assert.ok(w.evCostBps < b.evCostBps && b.evCostBps < t.evCostBps, "cheaper as the collar widens");
+
+  // balanced = the fundable floor nearest the midpoint (39 -> 40); at it the venues fund caps
+  // 63..68, midpoint 65.5 -> 65 (tie toward the larger credit). Share rule binds: 10% of 433 = 43 > 38.
+  assert.equal(b.floorCents, 40);
+  assert.equal(b.capCents, 65);
+  assert.equal(b.grossCreditCents, 433);
+  assert.equal(b.takeCents, 43);
+  assert.equal(b.takeRule, "share");
+  assert.equal(b.creditCents, 390);
+  assert.equal(b.evCostBps, 400);
+
+  // the top-level terms ARE the default tier's terms
+  assert.equal(q.floorCents, b.floorCents);
+  assert.equal(q.capCents, b.capCents);
+  assert.equal(q.creditCents, b.creditCents);
+  assert.equal(q.takeRule, "share");
+  assert.equal(q.minTakeBpsOfStake, 25);
+
+  // every tier is a real, fully hedged collar: never under-hedged, credit positive
+  for (const tier of PROTECTION_TIERS) {
+    const terms = q.tiers[tier] as CollarTerms;
+    const digitalCents = (terms.floorCents + 100 - terms.capCents) * q.contracts;
+    const units = terms.hedge.venue === "kalshi" ? terms.hedge.contractsMilli : terms.hedge.sharesMilli;
+    assert.ok(units >= digitalCents * 10, `${tier} under-hedged`);
+    assert.ok(terms.creditCents > 0);
+    assert.equal(terms.creditCents, terms.grossCreditCents - terms.takeCents);
+    assert.ok(TIER_RULES[tier].length > 20);
+  }
+});
+
+test("defaultTier picks which tier heads the quote; the others ride along unchanged", () => {
+  const balanced = ladder();
+  const tight = ladder({ config: { ...LEGACY_CONFIG, defaultTier: "tight" } });
+  const wide = ladder({ config: { ...LEGACY_CONFIG, defaultTier: "wide" } });
+  assert.ok(balanced.ok && tight.ok && wide.ok);
+  assert.equal(tight.tier, "tight");
+  assert.equal(tight.floorCents, 48);
+  assert.equal(wide.tier, "wide");
+  assert.equal(wide.floorCents, 30);
+  assert.deepEqual(tight.tiers, balanced.tiers);
+  assert.deepEqual(wide.tiers, balanced.tiers);
+});
+
+test("tiers collapse when they resolve to the same collar; the default still resolves", () => {
+  // One floor and one cap fundable -> a single collar; all three names point at it.
+  const cands: CollarTerms[] = [
+    {
+      floorCents: 50,
+      capCents: 63,
+      creditCents: 100,
+      grossCreditCents: 138,
+      takeCents: 38,
+      takeShareCents: 13,
+      takeMinimumCents: 38,
+      takeRule: "minimum",
+      takeWaived: false,
+      hedge: { action: "buy", venue: "kalshi", outcome: "No", ticker: "T", contractsMilli: 1000, avgPriceCents: 1, worstPriceCents: 1, costCents: 1 },
+      feesCents: 0,
+      evCostBps: 100,
+    },
+  ];
+  const sel = selectTiers(cands, 55, "wide");
+  assert.equal(sel.tier, "tight");
+  assert.deepEqual(Object.keys(sel.tiers), ["tight"]);
+  assert.equal(sel.terms.floorCents, 50);
+
+  // Two caps at one floor: tight takes the larger credit (cap 63), wide the higher cap (66);
+  // balanced's midpoint 64.5 ties and resolves toward the larger credit -> cap 63, the same
+  // collar as tight, so it collapses into tight.
+  const twoCaps: CollarTerms[] = [
+    cands[0],
+    { ...cands[0], capCents: 66, creditCents: 60, grossCreditCents: 98, evCostBps: 90 },
+  ];
+  const sel2 = selectTiers(twoCaps, 55, "balanced");
+  assert.equal(sel2.tiers.tight?.capCents, 63);
+  assert.equal(sel2.tiers.wide?.capCents, 66);
+  assert.equal(sel2.tiers.balanced, undefined);
+  assert.equal(sel2.tier, "tight");
+  // asking for a surviving name resolves to itself
+  assert.equal(selectTiers(twoCaps, 55, "wide").tier, "wide");
+});
+
+test("tight tier still prefers a floor at or above entry when the venues fund one", () => {
+  // Entry 45: floors 48 and 40 both fundable; 48 >= 45 protects entry -> tight = 48.
+  // Entry 49: no fundable floor protects entry -> highest floor wins anyway (48).
+  const a = ladder({ entryCents: 45, config: { ...LEGACY_CONFIG, defaultTier: "tight" } });
+  const b = ladder({ entryCents: 49, config: { ...LEGACY_CONFIG, defaultTier: "tight" } });
+  assert.ok(a.ok && b.ok);
+  assert.equal(a.floorCents, 48);
+  assert.equal(b.floorCents, 48);
+});
+
+test("cross-venue route carries tiers with the same rules (fat-gap fixture)", () => {
+  const pair = {
+    league: "mlb",
+    kalshi: { ticker: "KXMLBGAME-26SEP131420PITCHC-PIT" },
+    pm: { outcomes: ["Pittsburgh Pirates", "Chicago Cubs"], tokenIds: ["111", "222"], eventSlug: "mlb-pit-chc-2026-09-13" },
+    pmYesOutcomeIndex: 0,
+    pmNoOutcomeIndex: 1,
+    gameStartTime: GAME_START.toISOString(),
+    parityNote: "same official result",
+    fingerprint: "mlb:pit:chc:2026-09-13",
+  } as unknown as MatchedPair;
+  const noBook: PmBook = {
+    tokenId: "222",
+    asks: [
+      { priceMilli: 300, sizeMilli: 200_000 },
+      { priceMilli: 320, sizeMilli: 500_000 },
+    ],
+    bids: [],
+    minOrderSizeShares: 5,
+    tickMilli: 10,
+  };
+  const q = quoteCrossWrap({ pair, markCents: 62, entryCents: 41, contracts: 150, now: NOW, noBook, config: LEGACY_CONFIG });
+  assert.ok(q.ok, JSON.stringify(q));
+  assert.equal(q.tier, "balanced");
+  // tight is the legacy hand-computed collar (59/65, credit 918); it is still there under its name
+  assert.equal(q.tiers.tight?.floorCents, 59);
+  assert.equal(q.tiers.tight?.capCents, 65);
+  assert.equal(q.tiers.tight?.creditCents, 918);
+  assert.equal(q.tiers.tight?.takeRule, "share"); // 102c share > 38c minimum
+  // wide is the lowest floor on the grid (62-30 = 32) with the highest cap funded there
+  assert.equal(q.tiers.wide?.floorCents, 32);
+  assert.ok((q.tiers.wide?.capCents ?? 0) > (q.tiers.tight?.capCents ?? 0));
+  // balanced floor is the grid floor nearest the midpoint of 59 and 32 (45.5 -> 47, toward protection)
+  assert.equal(q.tiers.balanced?.floorCents, 47);
+  assert.equal(q.tiers.balanced?.capCents, 70);
+  assert.equal(q.floorCents, 47);
+  assert.equal(q.hedge.venue, "polymarket");
+});
+
+// ------------------------------------------------------- shipped defaults
+
+test("shipped defaults: the grid reaches 45c either side of the mark and the most upside heads the quote", () => {
+  assert.equal(DEFAULT_CROSS_CONFIG.defaultTier, "wide");
+  assert.equal(Math.max(...DEFAULT_CROSS_CONFIG.floorOffsetsCents), 45);
+  assert.equal(Math.max(...DEFAULT_CROSS_CONFIG.capOffsetsCents), 45);
+  // tonight's shape: 10.1 contracts at a 50c mark, the other side offered at 52c, no venue fee
+  const hedgeFor = (digitalCents: number) => ({ ok: true as const, costCents: Math.ceil((digitalCents * 52) / 100), feesCents: 0, hedge: { action: "buy", venue: "kalshi", outcome: "No", ticker: "T", contractsMilli: digitalCents * 10, avgPriceCents: 52, worstPriceCents: 52, costCents: Math.ceil((digitalCents * 52) / 100) } as CollarTerms["hedge"] });
+  const search = enumerateCollars({ markCents: 50, contracts: 10.1, config: DEFAULT_CROSS_CONFIG, hedgeFor });
+  const sel = selectTiers(search.candidates, 50, DEFAULT_CROSS_CONFIG.defaultTier);
+  assert.equal(sel.tier, "wide");
+  // the most upside: the 5c floor (the grid's lowest, 45 under the mark) under the highest cap the
+  // other side funds there; on the legacy grid the same search stopped at floor 20 / cap 75
+  // (cap 70 once the old 25c minimum credit was applied)
+  assert.equal(sel.terms.floorCents, 5);
+  assert.ok(sel.terms.capCents >= 85, `cap ${sel.terms.capCents}`);
+  assert.ok(sel.terms.creditCents > 0);
+  const legacy = selectTiers(enumerateCollars({ markCents: 50, contracts: 10.1, config: LEGACY_CONFIG, hedgeFor }).candidates, 50, "wide");
+  assert.equal(legacy.terms.floorCents, 20);
+  assert.equal(legacy.terms.capCents, 75);
+  // the tight and balanced tiers are still there and still ordered by floor
+  const t = sel.tiers.tight as CollarTerms;
+  const b = sel.tiers.balanced as CollarTerms;
+  assert.ok(t.floorCents > b.floorCents && b.floorCents > sel.terms.floorCents);
+});
+
+test("the tiers are chosen against the credit line, so Max upside is not a penny collar the line then strikes", () => {
+  // Packers at 64c, 15.38 contracts ($10), the other side at 36/37c: on the 30c grid the highest
+  // cap at the lowest floor (34/79) pays 3c, the highest floor (54/67) pays 2c. Chosen with no
+  // line, both tiers are then struck by the 5c minimum and the quote promotes to Balanced alone.
+  const packers = {
+    pair: { kalshi: { ticker: "KXNFLGAME-26OCT29CARGB-GB" }, gameStartTime: GAME_START.toISOString() },
+    markCents: 64,
+    entryCents: 65,
+    contracts: 15.38,
+    now: NOW,
+    noAsks: [
+      { priceCents: 36, qtyMilli: 2_000_000 },
+      { priceCents: 37, qtyMilli: 20_000_000 },
+    ],
+  };
+  const unlined = quoteLadderWrap({ ...packers, config: { ...LEGACY_CONFIG, defaultTier: "wide", minimumCredit: { cents: 0, bpsOfStake: 0 } } });
+  assert.ok(unlined.ok);
+  assert.deepEqual([unlined.tiers.wide?.capCents, unlined.tiers.wide?.creditCents], [79, 3]);
+  const struck = applyMinimumCredit(unlined);
+  assert.ok(struck.ok);
+  assert.equal(struck.tier, "balanced");
+  assert.deepEqual(Object.keys(struck.tiers), ["balanced"]);
+
+  // chosen against the line: the highest cap at that floor that still pays it (34/76, 32c), the
+  // highest floor that pays it (52/67, 14c); all three tiers survive the rule, the quote heads wide
+  const lined = quoteLadderWrap({ ...packers, config: { ...LEGACY_CONFIG, defaultTier: "wide" } });
+  assert.ok(lined.ok);
+  assert.equal(minimumCreditCents(15.38), 5);
+  assert.deepEqual([lined.tiers.wide?.floorCents, lined.tiers.wide?.capCents, lined.tiers.wide?.creditCents], [34, 76, 32]);
+  assert.deepEqual([lined.tiers.tight?.floorCents, lined.tiers.tight?.capCents, lined.tiers.tight?.creditCents], [52, 67, 14]);
+  assert.equal(lined.tiers.balanced?.floorCents, 44);
+  const kept = applyMinimumCredit(lined);
+  assert.ok(kept.ok);
+  assert.equal(kept, lined);
+  assert.equal(kept.tier, "wide");
+  assert.deepEqual(Object.keys(kept.tiers).sort(), ["balanced", "tight", "wide"]);
+
+  // the line the tiers are chosen against is the one the quote is later judged on
+  assert.equal(tierCreditLineCents(DEFAULT_CROSS_CONFIG, 15.38), minimumCreditCents(15.38));
+  assert.equal(tierCreditLineCents({ minimumCredit: { cents: 25, bpsOfStake: 25 } }, 150), 38);
+  assert.equal(tierCreditLineCents({}, 150), minimumCreditCents(150));
+
+  // nothing clears: the tiers come from everything, so the refusal downstream names the best credit
+  const none = selectTiers(unlined.tiers.wide ? [unlined.tiers.wide] : [], 65, "wide", 50);
+  assert.equal(none.terms.creditCents, 3);
+  assert.equal(applyMinimumCredit({ ...unlined, tiers: { wide: none.terms }, ...none.terms, tier: "wide" }, { cents: 50, bpsOfStake: 0 }).ok, false);
+});

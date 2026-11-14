@@ -73,6 +73,7 @@ export function parseKalshiMarket(raw: Record<string, unknown>): KalshiMarket {
     volume: Number(raw.volume_fp ?? raw.volume ?? 0),
     openInterest: Number(raw.open_interest_fp ?? raw.open_interest ?? 0),
     rulesPrimary: String(raw.rules_primary ?? ""),
+    rulesSecondary: String(raw.rules_secondary ?? ""),
   };
 }
 
@@ -91,6 +92,39 @@ export async function getOpenMarkets(
       cursor?: string;
     };
     for (const m of data.markets ?? []) out.push(parseKalshiMarket(m));
+    cursor = data.cursor ?? "";
+    if (!cursor || (data.markets ?? []).length === 0) break;
+  }
+  return out;
+}
+
+/** A market with its official result once settled; "" while the result is not yet official. */
+export type KalshiSettledMarket = KalshiMarket & { result: "yes" | "no" | "" };
+
+/**
+ * The series' markets settled since `sinceMs` (by close time), with their results: what a
+ * parlay's earlier picks settled on. A settled market leaves the open list, so a pick on a game
+ * already played is found here and nowhere else. Read-only, no keys.
+ */
+export async function getSettledMarkets(
+  seriesTicker: string,
+  sinceMs: number,
+  fetchImpl: typeof fetch = fetch,
+): Promise<KalshiSettledMarket[]> {
+  const out: KalshiSettledMarket[] = [];
+  let cursor = "";
+  for (let page = 0; page < 5; page += 1) {
+    const url =
+      `${kalshiBase()}/markets?series_ticker=${encodeURIComponent(seriesTicker)}` +
+      `&status=settled&min_close_ts=${Math.floor(sinceMs / 1000)}&limit=1000${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`;
+    const data = (await fetchJsonWithRetry(url, fetchImpl)) as {
+      markets?: Record<string, unknown>[];
+      cursor?: string;
+    };
+    for (const m of data.markets ?? []) {
+      const raw = String(m.result ?? "");
+      out.push({ ...parseKalshiMarket(m), result: raw === "yes" || raw === "no" ? raw : "" });
+    }
     cursor = data.cursor ?? "";
     if (!cursor || (data.markets ?? []).length === 0) break;
   }
@@ -117,6 +151,37 @@ export async function getRecentTrades(
     trades?: Record<string, unknown>[];
   };
   return (data.trades ?? []).map(parseKalshiTrade);
+}
+
+export interface KalshiMarketResult {
+  ticker: string;
+  status: string;
+  /** "yes" | "no" once finalized, "" while the result is not yet official */
+  result: "yes" | "no" | "";
+  /** the rule text as published at this read (both parts), for the settlement check; "" when absent */
+  rulesPrimary: string;
+  rulesSecondary: string;
+  /** the exact URL read */
+  sourceUrl: string;
+}
+
+/** Official settlement result for one market (empty result until finalized). */
+export async function getMarketResult(
+  ticker: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<KalshiMarketResult> {
+  const sourceUrl = `${kalshiBase()}/markets/${encodeURIComponent(ticker)}`;
+  const data = (await fetchJsonWithRetry(sourceUrl, fetchImpl)) as { market?: Record<string, unknown> };
+  const m = data.market ?? {};
+  const raw = String(m.result ?? "");
+  return {
+    ticker: String(m.ticker ?? ticker),
+    status: String(m.status ?? ""),
+    result: raw === "yes" || raw === "no" ? raw : "",
+    rulesPrimary: String(m.rules_primary ?? ""),
+    rulesSecondary: String(m.rules_secondary ?? ""),
+    sourceUrl,
+  };
 }
 
 export function midCents(m: KalshiMarket): number {

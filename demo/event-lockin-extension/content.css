@@ -1,0 +1,575 @@
+/* Atticus Earn & Protect: Lock in. Styled to sit inside each venue's own theme so the eye stays on
+   the venue; our name is one line at the foot of the panel. Everything is inline: one line under a
+   position row, and a panel that opens under that line and pushes the rows below down. Nothing is
+   fixed over the page except a one-line notice when the service cannot answer, and the fallback
+   card when the page's rows could not be read.
+
+   Skins. Every colour below is a variable set on the roots we draw (.ael-host, .ael-card,
+   .ael-note, .ael-pill, .ael-slip, .ael-tip). The defaults are the ProphetX theme: near-black, white, the venue's green. The
+   script adds a venue class to each root (.ael-v-kalshi, .ael-v-novig, .ael-v-stx) and the skin overrides
+   the variables there; nothing else in the file knows which venue it is on. */
+
+:where(.ael-host, .ael-card, .ael-note, .ael-pill, .ael-slip, .ael-tip) {
+  --ael-fg: #f2f3f5;
+  --ael-fg-strong: #ffffff;
+  --ael-soft: #c3c4c9;
+  --ael-muted: #9a9ca3;
+  --ael-dim: #6f7279;
+  --ael-faint: #55575e;
+  --ael-bg: #161618;
+  --ael-bg-deep: #0d0d0f;
+  --ael-bg-raise: #1d1d20;
+  --ael-bg-hover: #262629;
+  --ael-border: #27272a;
+  --ael-border-hover: #333336;
+  --ael-divider: #222225;
+  --ael-accent: #0ba249;
+  --ael-accent-hover: #0db553;
+  --ael-accent-ink: #ffffff;
+  --ael-glow: #55e8b9;
+  --ael-accent-text: #55e8b9;
+  --ael-accent-line: rgba(11, 162, 73, 0.55);
+  --ael-accent-wash: rgba(11, 162, 73, 0.1);
+  --ael-accent-wash-2: rgba(11, 162, 73, 0.14);
+  --ael-accent-wash-3: rgba(11, 162, 73, 0.18);
+  --ael-shadow: rgba(0, 0, 0, 0.55);
+  --ael-ring: rgba(255, 255, 255, 0.35);
+  --ael-radius: 8px;
+  --ael-radius-lg: 14px;
+}
+
+/* Kalshi: white page, near-black type, one green (the venue's action green), soft grey borders,
+   rounder corners as its pills have. */
+.ael-v-kalshi {
+  --ael-fg: #191919;
+  --ael-fg-strong: #191919;
+  --ael-soft: #3a3a3a;
+  --ael-muted: #737373;
+  --ael-dim: #8c8c8c;
+  --ael-faint: #a3a3a3;
+  --ael-bg: #ffffff;
+  --ael-bg-deep: #f6f6f6;
+  --ael-bg-raise: #efefef;
+  --ael-bg-hover: #e6e6e6;
+  --ael-border: #ededed;
+  --ael-border-hover: #d0d0d0;
+  --ael-divider: #ededed;
+  --ael-accent: #06b67a;
+  --ael-accent-hover: #05a46e;
+  --ael-accent-ink: #ffffff;
+  --ael-glow: #06b67a;
+  --ael-accent-text: #059a67;
+  --ael-accent-line: rgba(6, 182, 122, 0.55);
+  --ael-accent-wash: rgba(6, 182, 122, 0.08);
+  --ael-accent-wash-2: rgba(6, 182, 122, 0.12);
+  --ael-accent-wash-3: rgba(6, 182, 122, 0.16);
+  --ael-shadow: rgba(0, 0, 0, 0.14);
+  --ael-ring: rgba(255, 255, 255, 0.5);
+  --ael-radius: 10px;
+  --ael-radius-lg: 16px;
+}
+
+/* Novig: black page, dark-grey cards, warm white type, the venue's blue as the one accent. */
+.ael-v-novig {
+  --ael-fg: #fff8f4;
+  --ael-fg-strong: #ffffff;
+  --ael-soft: #d9d4d0;
+  --ael-muted: #beb9b6;
+  --ael-dim: #8a8683;
+  --ael-faint: #656260;
+  --ael-bg: #1c1c1c;
+  --ael-bg-deep: #111111;
+  --ael-bg-raise: #242424;
+  --ael-bg-hover: #2c2c2c;
+  --ael-border: #2a2a2a;
+  --ael-border-hover: #3a3a3a;
+  --ael-divider: #262626;
+  --ael-accent: #179be7;
+  --ael-accent-hover: #2ea8f0;
+  --ael-accent-ink: #ffffff;
+  --ael-glow: #5fc1ff;
+  --ael-accent-text: #5fc1ff;
+  --ael-accent-line: rgba(23, 155, 231, 0.6);
+  --ael-accent-wash: rgba(23, 155, 231, 0.12);
+  --ael-accent-wash-2: rgba(23, 155, 231, 0.16);
+  --ael-accent-wash-3: rgba(23, 155, 231, 0.22);
+  --ael-shadow: rgba(0, 0, 0, 0.6);
+  --ael-ring: rgba(255, 255, 255, 0.35);
+  --ael-radius: 6px;
+  --ael-radius-lg: 12px;
+}
+
+/* STX: near-black page (#010101), dark-grey panels, light type, the venue's amber as the one
+   accent; the amber is bright, so the ink on a filled pill is dark. */
+.ael-v-stx {
+  --ael-fg: #f4f4f4;
+  --ael-fg-strong: #ffffff;
+  --ael-soft: #d1d1d1;
+  --ael-muted: #9a9a9a;
+  --ael-dim: #818181;
+  --ael-faint: #5c5c5c;
+  --ael-bg: #141414;
+  --ael-bg-deep: #0a0a0a;
+  --ael-bg-raise: #1d1d1d;
+  --ael-bg-hover: #262626;
+  --ael-border: #2e2e2e;
+  --ael-border-hover: #3a3a3a;
+  --ael-divider: #262626;
+  --ael-accent: #f9ae1c;
+  --ael-accent-hover: #ffc91a;
+  --ael-accent-ink: #1a1200;
+  --ael-glow: #ffe233;
+  --ael-accent-text: #ffc91a;
+  --ael-accent-line: rgba(249, 174, 28, 0.6);
+  --ael-accent-wash: rgba(249, 174, 28, 0.12);
+  --ael-accent-wash-2: rgba(249, 174, 28, 0.16);
+  --ael-accent-wash-3: rgba(249, 174, 28, 0.22);
+  --ael-shadow: rgba(0, 0, 0, 0.65);
+  --ael-ring: rgba(255, 255, 255, 0.35);
+  --ael-radius: 6px;
+  --ael-radius-lg: 12px;
+}
+
+.ael-ui,
+.ael-ui * {
+  box-sizing: border-box;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  letter-spacing: 0;
+  text-transform: none;
+  line-height: 1.3;
+}
+
+/* The block inserted after a position row. Width and left edge are set by the script from the row. */
+.ael-host { display: block; margin: 0; padding: 0; }
+tr.ael-host { display: table-row; }
+tr.ael-host > td { padding: 0 !important; border: 0 !important; white-space: normal; text-align: left; }
+/* Inside a card (a deck of positions laid out side by side): the card's last row, full width, a
+   little room above it and none below since the card's own padding closes it. */
+.ael-host.ael-inside { width: 100%; flex: none; align-self: stretch; margin-top: 6px; }
+.ael-host.ael-inside .ael-row { max-width: none; padding: 0; }
+/* Capped: the venue's table can be wider than the window, and a card under the Market column
+   reads better than a banner across every column. */
+/* Positioned, above a card's "stretched link" overlay (Kalshi lays an absolutely positioned
+   anchor over each card and row); unpositioned, the overlay would take the hover and the tap. */
+.ael-row { display: block; position: relative; z-index: 5; max-width: 680px; padding: 4px 0 8px; color: var(--ael-fg); font-size: 14px; text-align: left; }
+
+/* The line is the badge. One box holds the line and, when open, the panel under it: one border,
+   the venue's radius, no card inside a card. The line: the pill (filled shield, "Lock in"), one
+   sentence in the row's type, the chevron. */
+.ael-box { border: 1px solid var(--ael-accent-line); border-radius: var(--ael-radius); background: var(--ael-bg); overflow: hidden; transition: border-color 0.12s, background 0.12s; }
+.ael-box:has(.ael-line-on) { border-color: var(--ael-accent); background: var(--ael-accent-wash); }
+.ael-box:has(.ael-line-off), .ael-box:has(.ael-line-wait) { border-color: var(--ael-border); }
+.ael-box:has(.ael-line-off:hover) { border-color: var(--ael-border-hover); }
+.ael-line {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 7px 10px 7px 7px;
+  border: 0;
+  background: transparent;
+  color: var(--ael-fg);
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+}
+.ael-line:hover { background: var(--ael-accent-wash); }
+.ael-line-off:hover, .ael-line-wait:hover { background: var(--ael-bg-raise); }
+.ael-line-wait { cursor: default; }
+/* the pill in the line: the same mark as the game-card badge */
+.ael-tag {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px 3px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--ael-accent-line);
+  background: var(--ael-accent-wash-2);
+  color: var(--ael-fg-strong);
+  font-size: 12.5px;
+  font-weight: 600;
+  line-height: 16px;
+  white-space: nowrap;
+}
+.ael-tag b { font-weight: 600; }
+.ael-tag .ael-ic { width: 14px; height: 14px; color: var(--ael-glow); }
+.ael-tag .ael-ic svg { width: 14px; height: 14px; }
+.ael-tag svg path:last-child { stroke: var(--ael-bg); }
+/* protected: the pill goes solid in the venue's accent */
+.ael-line-on .ael-tag { background: var(--ael-accent); border-color: var(--ael-accent); color: var(--ael-accent-ink); }
+.ael-line-on .ael-tag .ael-ic { color: var(--ael-accent-ink); }
+.ael-line-on .ael-tag svg path:last-child { stroke: var(--ael-accent); }
+/* waiting or unavailable: muted outline pill, no shield, the word centred (even padding) */
+.ael-line-off .ael-tag, .ael-line-wait .ael-tag { padding: 3px 10px; background: var(--ael-bg-deep); border-color: var(--ael-border-hover); color: var(--ael-soft); }
+.ael-ic { display: inline-flex; flex: none; width: 18px; height: 18px; align-items: center; justify-content: center; color: var(--ael-glow); }
+.ael-ic svg { width: 16px; height: 16px; display: block; }
+.ael-fact { flex: 1; min-width: 0; font-size: 14px; color: var(--ael-fg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ael-fact b { font-weight: 600; color: var(--ael-fg-strong); font-variant-numeric: tabular-nums; }
+.ael-line-off .ael-fact, .ael-line-wait .ael-fact { color: var(--ael-muted); }
+/* The chevron: the line opens and closes its panel; it turns when the panel is open. */
+.ael-chev { flex: none; width: 16px; height: 16px; color: var(--ael-dim); transition: transform 0.18s ease; }
+.ael-chev svg { width: 16px; height: 16px; display: block; }
+.ael-line.ael-open .ael-chev { transform: rotate(180deg); color: var(--ael-muted); }
+/* the lock lands: solid for a beat, then Protected */
+.ael-line.ael-flash { animation: ael-flash 0.7s ease-out; }
+@keyframes ael-flash { 0%, 35% { background: var(--ael-accent); } 100% { background: transparent; } }
+.ael-line.ael-flash .ael-fact, .ael-line.ael-flash .ael-fact b, .ael-line.ael-flash .ael-chev { animation: ael-flash-ink 0.7s ease-out; }
+@keyframes ael-flash-ink { 0%, 35% { color: var(--ael-accent-ink); } }
+
+/* The panel under the line, closed by default: part of the same box, a divider above it. */
+.ael-panel { display: none; padding: 2px 14px 12px; border-top: 1px solid var(--ael-divider); color: var(--ael-fg); font-size: 14px; }
+.ael-panel.ael-on { display: block; }
+/* The slide-in plays once, at the tap that opens the panel; a repaint never replays it. */
+.ael-panel.ael-enter { animation: ael-open 0.18s ease-out; }
+@keyframes ael-open { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
+
+/* A heading with a sentence under it: refusals, a voided lock. */
+.ael-ph { margin: 10px 0 6px; }
+.ael-ph b { display: block; font-size: 14px; font-weight: 600; color: var(--ael-fg-strong); }
+.ael-ph span { display: block; font-size: 12px; color: var(--ael-muted); margin-top: 3px; }
+
+/* Waiting on the book: one line of words in the muted tone, no bars. */
+.ael-wait { font-size: 13px; color: var(--ael-muted); padding: 12px 0; line-height: 1.4; }
+
+/* The slip: rows with dividers, the venue's type size, right-aligned tabular numbers; the floor
+   is the one coloured figure. Nothing under 12px anywhere in the panel. */
+.ael-ledger { margin: 0; }
+.ael-lr { display: flex; align-items: baseline; gap: 18px; padding: 9px 0; border-bottom: 1px solid var(--ael-divider); }
+.ael-lr.ael-last { border-bottom: 0; }
+.ael-lr .ael-l { flex: 1; min-width: 0; font-size: 14px; color: var(--ael-fg); }
+.ael-lr b { font-size: 15px; font-weight: 600; color: var(--ael-fg-strong); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.ael-lr s { width: 92px; font-size: 12px; color: var(--ael-muted); text-align: right; text-decoration: none; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.ael-hero b { color: var(--ael-accent-text); }
+.ael-hero b.ael-pay { color: var(--ael-fg-strong); }
+
+/* The venue pick: a strip above the button naming each venue that priced the other side with what
+   it would have paid, the one the hedge goes to filled in the venue's accent. Chips wrap on narrow
+   cards; the label keeps its own line then. */
+.ael-venues { display: flex; flex-wrap: wrap; align-items: center; gap: 5px 6px; padding: 9px 0 2px; border-top: 1px solid var(--ael-divider); }
+.ael-venues .ael-l { font-size: 12px; color: var(--ael-muted); margin-right: 2px; white-space: nowrap; }
+.ael-vchip { display: inline-flex; align-items: center; gap: 4px; border: 1px solid var(--ael-border); border-radius: 999px; padding: 3px 8px; font-size: 12px; line-height: 1.3; color: var(--ael-muted); background: var(--ael-bg-deep); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.ael-vchip b { font-weight: 600; color: var(--ael-fg-strong); }
+.ael-vchip.ael-won { border-color: var(--ael-accent); background: var(--ael-accent-wash-2); color: var(--ael-fg-strong); }
+.ael-vchip.ael-won b { color: var(--ael-accent-text); }
+.ael-vchip.ael-mute { border-style: dashed; color: var(--ael-muted); background: transparent; }
+.ael-vchip .ael-why { color: var(--ael-muted); font-size: 11px; }
+.ael-vchip .ael-ic { width: 12px; height: 12px; color: var(--ael-accent-text); }
+.ael-vchip .ael-ic svg { width: 12px; height: 12px; }
+
+/* Shape of the deal: a small segmented control, visible when the books fund more than one. */
+/* The tiers share the row's width evenly, two or three of them; a tier's figures sit on one line
+   when they fit and the credit drops to a second line when they do not, so no figure is ever cut. */
+.ael-segs { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 6px; margin: 10px 0 2px; }
+.ael-seg { min-width: 0; border: 1px solid var(--ael-border); border-radius: var(--ael-radius); background: var(--ael-bg-deep); color: var(--ael-muted); padding: 6px 8px; font-size: 12px; line-height: 1.3; cursor: pointer; text-align: center; font-family: inherit; }
+.ael-seg b { display: block; color: var(--ael-fg-strong); font-size: 12.5px; font-weight: 600; margin-bottom: 1px; white-space: nowrap; }
+.ael-seg span { display: block; font-variant-numeric: tabular-nums; white-space: normal; }
+.ael-seg span i { display: inline-block; font-style: normal; white-space: nowrap; }
+.ael-seg[aria-pressed="true"] { border-color: var(--ael-accent); box-shadow: 0 0 0 1px var(--ael-accent) inset; background: var(--ael-accent-wash-2); }
+
+/* The button: the badge grown to the row's width. It says Lock in; the price is on the rows above it. */
+.ael-go {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  height: 40px;
+  padding: 0 16px;
+  margin: 8px 0 10px;
+  border: 0;
+  border-radius: var(--ael-radius);
+  background: var(--ael-accent);
+  color: var(--ael-accent-ink);
+  font: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.ael-go:hover { background: var(--ael-accent-hover); }
+.ael-go:disabled { cursor: wait; }
+.ael-go .ael-ic { width: 16px; height: 16px; color: var(--ael-accent-ink); }
+.ael-go .ael-ic svg { width: 16px; height: 16px; }
+.ael-go svg path:last-child { stroke: var(--ael-accent); }
+/* While the lock runs: the button holds its colour, a small ring turns before the stage in words. */
+.ael-go.ael-busy { background: var(--ael-accent); font-weight: 600; }
+.ael-go.ael-busy::before {
+  content: "";
+  display: inline-block;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  border: 2px solid var(--ael-ring);
+  border-top-color: var(--ael-accent-ink);
+  animation: ael-spin 0.8s linear infinite;
+}
+@keyframes ael-spin { to { transform: rotate(360deg); } }
+.ael-go.ael-quiet { display: inline-flex; width: auto; height: 36px; margin: 0; padding: 0 14px; background: var(--ael-bg-raise); color: var(--ael-fg-strong); font-size: 13px; }
+.ael-go.ael-quiet:hover { background: var(--ael-bg-hover); }
+/* Simple layout: the action is the pill from the line, solid, at a finger's height; the one quiet
+   toggle (Details) sits on the same row, pushed to the right. The row wraps on a narrow card. */
+.ael-go.ael-pillgo { display: inline-flex; width: auto; min-height: 36px; height: auto; margin: 0; padding: 7px 16px 7px 12px; border-radius: 999px; font-size: 14px; white-space: normal; text-align: left; }
+.ael-go.ael-pillgo.ael-busy { padding-left: 14px; }
+.ael-offer-acts { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin: 12px 0 2px; }
+.ael-offer-acts .ael-links { margin-left: auto; font-size: 13px; color: var(--ael-muted); white-space: nowrap; }
+.ael-offer-acts .ael-links a { color: var(--ael-muted); text-decoration: underline; text-underline-offset: 2px; padding: 6px 2px; }
+.ael-offer-acts .ael-links a:hover, .ael-offer-acts .ael-links a[aria-expanded="true"] { color: var(--ael-fg-strong); }
+/* One toggle everywhere: the label holds still, the chevron turns when it is open (aria-expanded). */
+.ael-tg, .ael-offer-acts .ael-links a.ael-tg { display: inline-flex; align-items: center; gap: 3px; color: var(--ael-muted); text-decoration: none; font-size: 13px; font-weight: 500; padding: 6px 2px; white-space: nowrap; }
+.ael-tg:hover, .ael-tg[aria-expanded="true"], .ael-offer-acts .ael-links a.ael-tg:hover, .ael-offer-acts .ael-links a.ael-tg[aria-expanded="true"] { color: var(--ael-fg-strong); }
+.ael-tgc { display: inline-flex; width: 14px; height: 14px; transition: transform 0.18s ease; }
+.ael-tgc svg { width: 14px; height: 14px; display: block; }
+.ael-tg[aria-expanded="true"] .ael-tgc { transform: rotate(180deg); }
+/* Rules open: a grid with one case a row */
+.ael-rgrid { display: flex; flex-direction: column; gap: 5px; font-size: 12px; line-height: 1.4; margin: 2px 0 6px; }
+.ael-rgh { color: var(--ael-dim); font-size: 11.5px; }
+.ael-rg { display: grid; grid-template-columns: 8.5em 1fr; column-gap: 10px; align-items: baseline; }
+.ael-rg > span { color: var(--ael-muted); }
+.ael-rg > b { font-weight: 500; color: var(--ael-soft); overflow-wrap: anywhere; }
+.ael-rg > b .ael-dim { color: var(--ael-muted); font-weight: 400; }
+/* the helper beside a button gives way first, so Details keeps its place at the right of the row */
+.ael-offer-acts > span:not(.ael-links) { flex: 1 1 60px; min-width: 60px; font-size: 12px; color: var(--ael-muted); line-height: 1.3; }
+
+/* Details: five rows in one grammar under the pill. A dim label on the left, the value on the
+   right, every row the same size and the same two tones; the rules grid spans both columns. */
+.ael-details { margin: 10px 0 2px; padding-top: 8px; border-top: 1px solid var(--ael-divider); }
+.ael-drows { display: grid; grid-template-columns: max-content 1fr; column-gap: 14px; row-gap: 7px; align-items: baseline; font-size: 12.5px; line-height: 1.45; margin: 0 0 8px; }
+.ael-dl { color: var(--ael-muted); white-space: nowrap; }
+.ael-dl .ael-tg { font-size: 12.5px; padding: 0; color: var(--ael-muted); }
+.ael-dl .ael-tg:hover, .ael-dl .ael-tg[aria-expanded="true"] { color: var(--ael-fg-strong); }
+.ael-dv { color: var(--ael-soft); min-width: 0; overflow-wrap: anywhere; }
+.ael-dv b { font-weight: 600; color: var(--ael-fg-strong); }
+.ael-dv .ael-dim { color: var(--ael-muted); }
+.ael-dwide { grid-column: 1 / -1; }
+.ael-dwide .ael-rgrid { margin: 0 0 2px; }
+/* Shape: a segmented control, one button a shape, the chosen one in the venue's accent. */
+.ael-dl.ael-dshape, .ael-dv.ael-dshape { align-self: center; margin-bottom: 3px; }
+.ael-shape { display: inline-flex; border: 1px solid var(--ael-border); border-radius: 8px; padding: 2px; background: var(--ael-bg-deep); gap: 2px; max-width: 100%; }
+.ael-shape-b { appearance: none; border: 1px solid transparent; border-radius: 6px; background: transparent; color: var(--ael-muted); font: inherit; font-size: 12.5px; font-weight: 500; line-height: 1.2; padding: 5px 10px; cursor: pointer; white-space: nowrap; }
+.ael-shape-b:hover { color: var(--ael-fg-strong); }
+.ael-shape-b[aria-pressed="true"] { border-color: var(--ael-accent); background: var(--ael-accent-wash-2); color: var(--ael-fg-strong); font-weight: 600; }
+.ael-shape-b:focus-visible { outline: 2px solid var(--ael-accent); outline-offset: 1px; }
+
+/* A parlay's picks as a list: a box each (empty open, a check hit, a cross missed), the club and
+   its market, the start or the result at the right edge. The same shape as the demo's tickets. */
+.ael-picks { display: flex; flex-direction: column; gap: 5px; margin: 2px 0 4px; }
+.ael-pick { display: flex; align-items: center; gap: 9px; font-size: 13px; line-height: 1.35; color: var(--ael-soft); }
+.ael-pick i { font-style: normal; flex: none; width: 15px; height: 15px; border-radius: 4px; border: 1.5px solid var(--ael-dim); display: inline-flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 800; color: var(--ael-muted); box-sizing: border-box; }
+.ael-pick-hit i { border-color: transparent; background: var(--ael-accent); color: var(--ael-accent-ink); }
+.ael-pick-miss i { border-color: transparent; background: rgba(255, 107, 107, 0.18); color: #ff6b6b; }
+.ael-pick-unk i { border-style: dashed; }
+.ael-pick span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ael-pick span b { font-weight: 600; color: var(--ael-fg-strong); }
+.ael-pick-miss span b { text-decoration: line-through; color: var(--ael-dim); }
+.ael-pick em { font-style: normal; flex: none; font-size: 12px; color: var(--ael-muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.ael-pick-hit em { color: var(--ael-accent-text); }
+.ael-pick-miss em { color: #ff6b6b; }
+.ael-parlay-acts { margin-top: 2px; }
+.ael-dv.ael-dpicks .ael-picks { margin: 0; gap: 4px; }
+.ael-dv.ael-dpicks .ael-pick { font-size: 12.5px; }
+.ael-parlay-acts .ael-links { margin-left: auto; }
+
+.ael-fine { font-size: 12px; color: var(--ael-muted); text-align: left; margin: 0 0 4px; line-height: 1.4; }
+.ael-fine a { color: var(--ael-muted); text-decoration: underline; }
+
+.ael-how { display: none; font-size: 12.5px; color: var(--ael-soft); margin: 10px 0 6px; max-width: 70ch; line-height: 1.45; }
+.ael-how.ael-on { display: block; }
+.ael-how p { margin: 0 0 6px; }
+
+/* Leaving early: a block under the slip with its own small heading, the live figures as slip
+   rows, the two ways out side by side (the coloured button leaves, the quiet one stays). */
+.ael-leave { margin: 12px 0 2px; padding: 10px 12px 8px; border: 1px solid var(--ael-border); border-radius: var(--ael-radius); background: var(--ael-bg-deep); }
+.ael-leave-h { display: flex; align-items: baseline; gap: 10px; margin: 0 0 2px; }
+.ael-leave-h b { font-size: 14px; font-weight: 600; color: var(--ael-fg-strong); }
+.ael-leave-h span { font-size: 12px; color: var(--ael-muted); }
+.ael-leave-why { margin: 6px 0 2px; }
+.ael-leave-why .ael-tg { font-size: 12px; }
+.ael-leave-why .ael-fine { margin-top: 4px; }
+.ael-line-hedge .ael-tag { border-style: dashed; }
+.ael-lr .ael-l .ael-dim { color: var(--ael-muted); font-size: 12px; }
+.ael-lr b .ael-dim { font-weight: 400; font-size: 12px; color: var(--ael-muted); }
+.ael-leave-acts { display: flex; align-items: center; gap: 8px; margin: 8px 0 8px; }
+.ael-leave-acts .ael-go { margin: 0; flex: 1; }
+.ael-leave-acts .ael-go.ael-quiet { flex: none; }
+
+/* After the lock: the one thing left to do as a quiet button under the slip, what it means beside it. */
+.ael-acts { display: flex; align-items: center; gap: 10px; margin: 10px 0 0; }
+.ael-acts .ael-go.ael-quiet { flex: none; }
+.ael-acts span { font-size: 12px; color: var(--ael-muted); line-height: 1.3; }
+
+/* After the lock: the slip above, then one grey line of facts ending in the receipt link. */
+.ael-meta { font-size: 12px; color: var(--ael-muted); margin: 10px 0 4px; line-height: 1.4; }
+.ael-meta a { color: var(--ael-muted); text-decoration: underline; }
+.ael-meta a:hover { color: var(--ael-soft); }
+
+/* The receipt's detail, under "receipt": what stands behind the terms, four labelled lines. */
+.ael-rcpt { display: grid; grid-template-columns: max-content 1fr; column-gap: 14px; row-gap: 4px; font-size: 12px; color: var(--ael-soft); background: rgba(127, 127, 127, 0.1); border-radius: var(--ael-radius); padding: 8px 10px; margin: 2px 0 8px; font-variant-numeric: tabular-nums; line-height: 1.4; }
+.ael-rcpt span { color: var(--ael-dim); }
+.ael-rcpt b { font-weight: 600; color: var(--ael-fg); overflow-wrap: anywhere; }
+.ael-rcpt b b { color: var(--ael-fg-strong); }
+.ael-rcpt code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; color: var(--ael-soft); }
+.ael-rcpt .ael-dim { color: var(--ael-muted); font-weight: 500; }
+
+.ael-size-form { display: flex; gap: 8px; align-items: center; margin: 0 0 10px; }
+.ael-size-form input { width: 120px; height: 36px; padding: 0 10px; border: 1px solid var(--ael-border-hover); border-radius: var(--ael-radius); font: inherit; font-size: 14px; color: var(--ael-fg-strong); background: var(--ael-bg-deep); }
+
+.ael-op { font-size: 12px; color: var(--ael-muted); background: rgba(127, 127, 127, 0.1); border-radius: var(--ael-radius); padding: 7px 10px; margin: 0 0 8px; font-variant-numeric: tabular-nums; line-height: 1.4; }
+.ael-op a { color: var(--ael-glow); text-decoration: underline; font-weight: 600; }
+
+.ael-disclose { font-size: 12px; color: var(--ael-faint); text-align: left; margin-top: 4px; }
+
+/* Before the trade. The pill: a filled shield and the words "Lock in · until 7:35pm ET" on each
+   protectable game's card, after its title or its time line. Not a browser tooltip: hovering
+   opens our own card at once (.ael-tip), so the cursor stays an arrow and the words come in the
+   skin. The pill swallows its own click so the venue's row does not open. */
+.ael-pill {
+  position: relative;
+  z-index: 5;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  vertical-align: middle;
+  margin: 0 8px;
+  padding: 2px 9px 2px 6px;
+  border-radius: 999px;
+  border: 1px solid var(--ael-accent-line);
+  background: var(--ael-accent-wash-2);
+  color: var(--ael-fg-strong);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 16px;
+  white-space: nowrap;
+  cursor: pointer;
+  outline: none;
+  transition: background 0.12s ease, border-color 0.12s ease;
+}
+.ael-pill b { font-weight: 700; color: var(--ael-fg-strong); }
+.ael-pill .ael-until { font-weight: 500; color: var(--ael-muted); }
+.ael-pill .ael-ic { width: 14px; height: 14px; color: var(--ael-glow); }
+.ael-pill .ael-ic svg { width: 14px; height: 14px; }
+.ael-pill:hover, .ael-pill:focus-visible { background: var(--ael-accent); border-color: var(--ael-accent); color: var(--ael-accent-ink); }
+.ael-pill:hover b, .ael-pill:hover .ael-until, .ael-pill:hover .ael-ic, .ael-pill:focus-visible b, .ael-pill:focus-visible .ael-until, .ael-pill:focus-visible .ael-ic { color: var(--ael-accent-ink); }
+.ael-pill:hover svg path:last-child, .ael-pill:focus-visible svg path:last-child { stroke: var(--ael-accent); }
+/* the pill on its own line at the foot of a card that has no time line */
+.ael-pill-row { display: block; grid-column: 1 / -1; margin: 6px 0 2px; text-align: left; }
+.ael-pill-row .ael-pill { margin-left: 0; }
+/* the tick inside the shield is cut in the skin's page colour, white on Kalshi, dark elsewhere */
+.ael-pill svg path:last-child, .ael-tip svg path:last-child, .ael-slip svg path:last-child { stroke: var(--ael-bg); }
+/* The hover card under a pill: fixed over the page, in the skin, two lines. */
+.ael-tip {
+  position: fixed;
+  z-index: 2147482000;
+  max-width: 270px;
+  padding: 9px 12px 10px;
+  border: 1px solid var(--ael-border-hover);
+  border-radius: var(--ael-radius);
+  background: var(--ael-bg);
+  color: var(--ael-muted);
+  box-shadow: 0 10px 28px var(--ael-shadow);
+  font-size: 12px;
+  line-height: 1.4;
+  text-align: left;
+  pointer-events: none;
+}
+.ael-tip b { display: flex; align-items: center; gap: 6px; color: var(--ael-fg-strong); font-weight: 600; font-size: 13px; margin-bottom: 3px; }
+.ael-tip .ael-ic { width: 16px; height: 16px; }
+.ael-tip .ael-ic svg { width: 14px; height: 14px; }
+.ael-tip > span { display: block; }
+/* The slip line: one quiet sentence under the pick, no button. */
+.ael-slip {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  margin: 8px 0 6px;
+  padding: 7px 10px;
+  border: 1px solid var(--ael-accent-line);
+  border-radius: var(--ael-radius);
+  background: var(--ael-accent-wash);
+  color: var(--ael-muted);
+  font-size: 11px;
+  line-height: 1.35;
+  text-align: left;
+}
+.ael-slip .ael-ic { width: 14px; height: 14px; margin-top: 1px; }
+.ael-slip .ael-ic svg { width: 13px; height: 13px; }
+.ael-slip b { color: var(--ael-fg-strong); font-weight: 600; }
+.ael-slip .ael-dim { color: var(--ael-dim); }
+
+/* Notice: bottom left, small, only when the service cannot answer on the plays page. */
+.ael-note {
+  position: fixed;
+  left: 18px;
+  bottom: 18px;
+  z-index: 2147482000;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  border: 1px solid var(--ael-border);
+  border-radius: 999px;
+  background: var(--ael-bg);
+  color: var(--ael-soft);
+  font-size: 12px;
+  opacity: 0.92;
+  box-shadow: 0 6px 24px var(--ael-shadow);
+}
+.ael-note .ael-ic { color: var(--ael-dim); width: 14px; height: 14px; }
+.ael-note .ael-ic svg { width: 14px; height: 14px; }
+
+/* Fallback card: the service confirmed positions but no row on the page could be read. */
+.ael-card {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 2147482000;
+  width: min(380px, calc(100vw - 32px));
+  max-height: 70vh;
+  overflow-y: auto;
+  border: 1px solid var(--ael-border);
+  border-radius: var(--ael-radius-lg);
+  background: var(--ael-bg);
+  color: var(--ael-fg);
+  box-shadow: 0 12px 40px var(--ael-shadow);
+}
+.ael-card-h { display: flex; justify-content: space-between; align-items: center; padding: 10px 10px 8px 16px; font-size: 11px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; color: var(--ael-muted); border-bottom: 1px solid var(--ael-divider); }
+.ael-x { border: 0; background: transparent; color: var(--ael-muted); font-size: 18px; line-height: 1; cursor: pointer; padding: 2px 6px; border-radius: 6px; }
+.ael-x:hover { background: var(--ael-bg-raise); color: var(--ael-fg-strong); }
+.ael-card-b { padding: 6px 12px 10px; }
+.ael-card-row { padding: 6px 0 0; }
+.ael-card-pos b { display: block; font-size: 14px; font-weight: 700; color: var(--ael-fg-strong); }
+.ael-card-pos span { display: block; font-size: 11.5px; color: var(--ael-muted); margin-top: 2px; }
+.ael-card .ael-row { padding-top: 6px; }
+/* a member venue: the card is the surface. One block before the connection (Connect), the rows
+   after it, a foot naming the connection and the way out. */
+.ael-card-state { padding: 2px 0 4px; }
+.ael-card-state .ael-ph { margin: 8px 0 6px; }
+.ael-card-state .ael-ph span { line-height: 1.45; }
+.ael-connect .ael-acts { margin-top: 10px; }
+.ael-connect .ael-fine { margin: 6px 0 0; }
+.ael-fine.ael-err { color: var(--ael-fg-strong); }
+.ael-card-empty { padding: 6px 0 4px; line-height: 1.45; }
+.ael-card-f { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 8px 16px 10px; font-size: 11.5px; color: var(--ael-muted); border-top: 1px solid var(--ael-divider); }
+.ael-card-f a { color: var(--ael-muted); text-decoration: underline; }
+.ael-card-f a:hover { color: var(--ael-soft); }
+
+@media (max-width: 560px) {
+  .ael-lr s { width: 72px; }
+  .ael-segs { grid-auto-flow: row; grid-auto-columns: auto; }
+}
+/* the rules on the receipt: the same toggle as the offer in the label column, the cases it covers
+   beside it while folded; open, the grid spans both columns. The terms link to the venue's own text. */
+.ael-rcpt .ael-tg { font-size: 12px; padding: 0; color: var(--ael-dim); }
+.ael-rcpt .ael-tg:hover, .ael-rcpt .ael-tg[aria-expanded="true"] { color: var(--ael-soft); }
+.ael-rcpt .ael-rcpt-wide { grid-column: 1 / -1; }
+.ael-rcpt .ael-rgrid { margin: 0 0 2px; }
+.ael-rcpt .ael-rg > span { color: var(--ael-muted); }
+.ael-rcpt .ael-rg > b { font-weight: 500; color: var(--ael-soft); }
+.ael-rcpt a.ael-terms-a { color: inherit; text-decoration: underline dotted; text-underline-offset: 2px; }
+.ael-rcpt a.ael-terms-a:hover { color: var(--ael-fg-strong); }
+.ael-size-form a.ael-tou-a { color: var(--ael-fg-strong); font-size: 13px; text-decoration: underline; text-underline-offset: 2px; }
+/* motion is a courtesy, never a requirement */
+@media (prefers-reduced-motion: reduce) {
+  .ael-panel.ael-enter, .ael-line.ael-flash, .ael-line.ael-flash .ael-fact, .ael-line.ael-flash .ael-fact b, .ael-line.ael-flash .ael-chev, .ael-chev, .ael-tgc { animation: none; transition: none; }
+}

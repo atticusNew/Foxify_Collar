@@ -1,0 +1,53 @@
+name: Event lane tests
+
+# The event branch deploys six Render services from its tip on every merge
+# (render-event-demos.yaml), and ci.yml only runs for main. This workflow is the
+# gate for the event branch: the event, BTC curve and sports venue tests, and the
+# tests of the on-chain venues page (render-onchain.yaml, deployed from the same
+# branch), run on every pull request into it and on every push to it.
+#
+# Tests only. Lint and tsc are left out on purpose: `npx tsc --noEmit -p services/api`
+# reports about 185 errors in legacy code that this lane does not touch, so it
+# cannot be a gate until those are cleared.
+
+on:
+  pull_request:
+    branches:
+      - cursor/tier2-cross-venue-2bfa
+  push:
+    branches:
+      - cursor/tier2-cross-venue-2bfa
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A newer commit on the same pull request or branch makes the older run moot.
+concurrency:
+  group: event-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Event, BTC curve and sports venue tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: "20"
+          cache: npm
+
+      # The repository is one npm workspace with a single lockfile at the root,
+      # and Render builds the services the same way (buildCommand: npm ci).
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run the lane's tests
+        working-directory: services/api
+        run: npx tsx --test tests/event*.test.ts tests/btc*.test.ts tests/sports*.test.ts tests/onchain*.test.ts

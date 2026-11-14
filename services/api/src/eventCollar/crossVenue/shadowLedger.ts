@@ -1,0 +1,1591 @@
+/**
+ * Event shadow ledger — the track record engine.
+ *
+ * The shadow run converts the demo's math into auditable history: every
+ * quotable board row becomes one simulated position (opened once per market,
+ * at the first priced quote), and after the event settles on Kalshi the
+ * position is marked against the official result. The ledger is append-only
+ * JSONL so the history is tamper-evident and replayable; positions are
+ * reconstructed by replay, never mutated in place.
+ *
+ * Everything here is pure bookkeeping over already-quoted terms. No venue
+ * calls, no trading: the module is structurally unable to do anything but
+ * record and summarize.
+ */
+
+import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
+import { dirname } from "node:path";
+import type { HedgeRoute, ProtectionTier, TakeRule } from "./types";
+import { capTotalCents, centsDownOf, centsOf, centsUpOf, floorTotalCents, PROTECTION_TIERS } from "./types";
+import type { RuleCheck, RuleEvidence } from "./ruleEvidence";
+import type { HedgeRouting, SettlementVenue } from "./hedgeRouting";
+import type { ParlayRecord } from "./parlayPicks";
+import { summarizeSaleAlternatives, type ShadowSaleSummary } from "./shadowSaleAlternatives";
+import {
+  FEE_RULE_LABELS,
+  SIZE_LADDER_MULTS,
+  type FeeRuleLabel,
+  type ShadowAltTerms,
+  type ShadowBookOpenReread,
+  type ShadowCounterfactuals,
+  type ShadowInGameReread,
+  type ShadowReread,
+} from "./shadowCounterfactuals";
+
+/**
+ * How a position's protection was funded: a hedge bought on one of the routes, or, on the
+ * member-app venue, the holder's own partial sale into their venue's bid ("member_sale": nothing
+ * bought anywhere, no capital of ours, no cash between the parties). Not a HedgeRoute: the
+ * routing never competes it.
+ */
+export type LedgerRoute = HedgeRoute | "member_sale";
+
+/**
+ * The facts of a member's own sale, as the venue confirmed them (memberSale.ts). Whole-contract
+ * totals in cents: the per-contract floor and cap on the record are these divided down, for the
+ * tables; the settlement reads these.
+ */
+export interface MemberSaleRecord {
+  /** the venue's market the sale was on (the buy-back and the settlement read need it); operator views only */
+  marketId: string;
+  /** the venue's max_price for the market in cents (usually 100): a venue contract is this many of ours per dollar */
+  maxPriceCents: number;
+  /** contracts the venue filled on the sell, and the contracts still riding to the game */
+  soldContracts: number;
+  keptContracts: number;
+  /** the walked limit the order was sent at, and the average the fills came back at, cents */
+  limitPriceCents: number;
+  avgPriceCents: number;
+  /** what the fills paid into the member's own balance, cents, before the venue's own fee on them */
+  cashNowCents: number;
+  /** the venue's fee on the fills, cents, when the fills read carried it */
+  feeCents?: number;
+  /** the two ends: cash now (the side lost), cash now plus $1 on every riding contract (it won) */
+  floorTotalCents: number;
+  capTotalCents: number;
+  /** the venue's order: its id, its terminal status, what was asked and what filled */
+  orderId: string | null;
+  clientOrderId: string;
+  status: string;
+  requestedContracts: number;
+  /** the hedge routes priced in the background at the sale, nothing sent (absent when none could be) */
+  compared?: MemberSaleComparison;
+  /**
+   * A combination (parlay) ticket sold in part through the venue's request-for-quote instead of
+   * the book: the quote accepted, the legs it carried. The result is read from the venue's own
+   * combo market at settlement, not from a Kalshi reference. Absent on a single-market sale.
+   */
+  combo?: MemberComboSale;
+  /** where the money figures came from (MemberFiguresFrom); absent on lines written before it was kept */
+  figuresFrom?: MemberFiguresFrom;
+  /** the venue's fills the figures were summed from, as the venue wrote them; absent on older lines and when the figures came from the order */
+  venueFills?: MemberVenueFill[];
+}
+
+/**
+ * "fills": the cash, the average and the size are the venue's own fills, summed exactly. "order":
+ * the fills read came back empty though the order said it filled, so the order's size stands in,
+ * counted at the price the order cannot have done worse than (memberSale.orderPriceBoundMicro).
+ */
+export type MemberFiguresFrom = "fills" | "order";
+
+/** One fill as the venue wrote it: dollars per contract, contracts, its fee on the fill when it gave one. Strings, digit for digit. */
+export interface MemberVenueFill {
+  price: string;
+  filled: string;
+  tradeFee?: string;
+}
+
+export interface MemberComboSale {
+  /** the venue's quote the sale accepted, and the price per contract it quoted, cents (a quote finer than a cent, down) */
+  rfqId: string | null;
+  quotedPriceCents: number;
+  /** the quote's price as the venue wrote it, dollars per contract; absent on lines written before it was kept */
+  quotedPrice?: string;
+  /** when the venue said the quote would lapse, when it said */
+  expiresAtIso: string | null;
+  legs: number;
+}
+
+/**
+ * The background comparison: the same size priced on the hedge routes at the moment of the sale,
+ * nothing sent anywhere. What a hedged lock would have paid up front and left at each end, so
+ * the member's own sale can be read against it.
+ */
+export interface MemberSaleComparison {
+  at: string;
+  ok: boolean;
+  /** why nothing was priced, when ok is false */
+  reason?: string;
+  tier?: ProtectionTier;
+  creditCents?: number;
+  floorTotalCents?: number;
+  capTotalCents?: number;
+  /** the route that would have been chosen, and each route's credit for the same protection */
+  chosen?: HedgeRoute | null;
+  routes?: Array<{ route: HedgeRoute; ok: boolean; creditCents: number | null; allInBps: number | null }>;
+  sent: false;
+}
+
+/** One simulated position opened from a live board quote. */
+export interface ShadowOpenRecord {
+  type: "open";
+  at: string;
+  /** Kalshi market ticker — the position key; one open position per market at a time (a market left early may be locked again) */
+  ticker: string;
+  kind: "sports" | "crypto";
+  league: string;
+  sideName: string;
+  eventTitle: string;
+  /** when protection locks: game start (sports) or market close (crypto), ISO */
+  eventTimeIso: string;
+  contracts: number;
+  markCents: number;
+  floorCents: number;
+  capCents: number;
+  creditCents: number;
+  /** quoted cost of protection, bps of naked EV (negative = protection beats naked) */
+  evCostBps: number;
+  route: LedgerRoute;
+  feesCents: number;
+  takeCents: number;
+  /**
+   * The hedge leg as quoted: walked cost in cents, venue fees included, and
+   * the NO units bought, in milli (1000 = one $1-paying share/contract).
+   * Optional because early ledgers predate these fields. The cost is
+   * informational: the writer's book derives it from the credit identity
+   * (see hedgeCostOf), so a record cannot misstate it.
+   */
+  hedgeCostCents?: number;
+  hedgeUnitsMilli?: number;
+  /** which protection tier the recorded terms are (absent on records before tiers existed: the tight rule) */
+  tier?: ProtectionTier;
+  takeRule?: TakeRule;
+  takeShareCents?: number;
+  takeMinimumCents?: number;
+  /**
+   * Counterfactuals priced from the same books at the same instant: every
+   * tier the venues funded, the default tier under each fee rule, and the
+   * default tier at larger sizes. Absent on records before shadow v2.
+   */
+  counterfactuals?: ShadowCounterfactuals;
+  /**
+   * Where each route's book came from at open: the aggregator's feed or the venue read directly.
+   * Absent on records before the feed was wired (every one of those was a direct read).
+   */
+  bookOrigins?: { polymarket?: "aggregator" | "direct"; kalshi?: "aggregator" | "direct" };
+  /**
+   * The Polymarket token the cross-venue hedge bought, so an early close can
+   * sell it into its live book. Absent on self-hedged positions and on records
+   * before early closes existed (those close with the hedge leg unpriced).
+   */
+  hedgeTokenId?: string;
+  /**
+   * The ProphetX strike the hedge bought, so an early close can read its live book through the
+   * aggregator, and the holder's side's strike on the same market, which the close BUYS to offset
+   * the hedge (the venue takes no sell order; prophetxOrders.ts). Absent on other routes.
+   */
+  hedgeStrikeId?: string;
+  hedgeOffsetStrikeId?: string;
+  /**
+   * The Novig market and outcome the hedge bought, so an early close can read its live book on
+   * the venue, and the holder's own outcome on the same market, which the close BUYS to offset
+   * the hedge (the venue takes no sell order; novigOrders.ts). Absent on other routes.
+   */
+  hedgeMarketId?: string;
+  hedgeOutcomeId?: string;
+  hedgeOffsetOutcomeId?: string;
+  /**
+   * The venue's rule text as published at open, pinned (sha256, source URL, the text). Null when
+   * the venue published none; absent on records before 2026-10-11. Evidence for the result, never
+   * an input to the payout.
+   */
+  rule?: RuleEvidence | null;
+  /**
+   * When the holder's venue is not Kalshi, `rule` pins that venue's published rules (basis
+   * "rules") and this pins the Kalshi reference market's text, the market the result is read
+   * from at settlement. Absent on Kalshi positions and on records before 2026-10-30.
+   */
+  referenceRule?: RuleEvidence | null;
+  /**
+   * Where the holder's position lives (hedgeRouting.SettlementVenue) and how the hedge venue was
+   * chosen against it: every route's all-in cost, the tails that differ and what they were priced
+   * at, the gates, the reason. Absent on records before routing was judged on the tails (every one
+   * of those was the cheaper EV, holder venue unknown).
+   */
+  holderVenue?: SettlementVenue;
+  routing?: HedgeRouting;
+  /**
+   * How the position came to be on the record. Absent: the scan opened it (the shadow's own
+   * simulated holder). "lock": a person tapped Lock in on a real position of this size, through
+   * the lock endpoint; the terms and the hedge are the same code path, the size is theirs.
+   */
+  source?: "lock";
+  /** With source "lock": what the holder paid per contract, cents, so their own cost sits on the record. */
+  entryCents?: number;
+  /**
+   * With source "lock": the holder's alias (lockGate.ts), from the key their client sent. Each
+   * holder's locks live in their own ledger file, so one market can be locked by several people
+   * and the ticker stays the key inside each file. Operator views only; the public record strips it.
+   */
+  holder?: string;
+  /**
+   * With source "lock": the position is a parlay locked at its last pick (parlayPicks.ts). The
+   * earlier picks and that they hit, the last pick the lock stands on, the ticket's stake and
+   * what it pays; the lock's contracts are one per payout dollar. Public: a holder's words only.
+   */
+  parlay?: ParlayRecord;
+  /**
+   * With route "member_sale": the member's own sale as their venue confirmed it. The floor and cap
+   * totals here are what settlement pays; the per-contract floorCents and capCents above are those
+   * divided down for the tables. creditCents is 0: nothing was paid by anyone but the venue's bid.
+   */
+  memberSale?: MemberSaleRecord;
+  /**
+   * With source "lock", on a real-money lock only: the real order that bought the whole hedge
+   * before this line was written (hedgeFirst.ts). Its presence is what makes the lock count
+   * against the exposure caps (exposureCaps.ts) without the receipt trail. Absent on a simulated
+   * lock and on real-money locks written before 2026-11-10 (the receipt trail carries those).
+   * Operator views only; the public record strips it.
+   */
+  hedgeFill?: HedgeFillOnRecord;
+}
+
+/** A real hedge fill as the lock ledger carries it: where, how much, what it cost all in, and the ids that tie it to the venue and the receipt trail. */
+export interface HedgeFillOnRecord {
+  venue: "kalshi" | "polymarket" | "prophetx" | "novig";
+  unitsMilli: number;
+  costCents: number;
+  orderId: string | null;
+  receiptId: string;
+}
+
+/** A member's buy-back at an early leave (route "member_sale"): the sold contracts bought again from the venue's offers. */
+export interface MemberBuyBackRecord {
+  /** contracts asked for (the ones sold at the lock) and the contracts the venue filled */
+  requestedContracts: number;
+  boughtContracts: number;
+  limitPriceCents: number;
+  avgPriceCents: number;
+  /** what the fills cost out of the member's own balance, cents, before the venue's fee */
+  costCents: number;
+  feeCents?: number;
+  orderId: string | null;
+  clientOrderId: string;
+  status: string;
+  /** where the money figures came from; absent on lines written before it was kept */
+  figuresFrom?: MemberFiguresFrom;
+  /** the venue's fills the cost was summed from, as the venue wrote them; absent on older lines */
+  venueFills?: MemberVenueFill[];
+}
+
+/**
+ * The user left early, before the lock: a new trade at live prices, both legs
+ * sold into their venues' bids in the same second. `priced: false` records an
+ * attempt where a leg had no depth; the position stays open and runs to
+ * settlement, and the attempt is counted so the record can say so.
+ */
+export interface ShadowCloseRecord {
+  type: "close";
+  at: string;
+  ticker: string;
+  priced: boolean;
+  /** when unpriced: which leg and why */
+  reason?: string;
+  /** the protected market's live mid at the close, cents (null when one side was empty) */
+  yesMidCents?: number | null;
+  /** average fill selling the user's Yes contracts, cents */
+  yesFillCents?: number;
+  /** the user's own sale after the venue fee; also what leaving with no protection pays */
+  positionProceedsCents?: number;
+  /** our hedge sale after fees */
+  hedgeProceedsCents?: number;
+  feesCents?: number;
+  /** what the user walked away with, the credit paid at the tap included */
+  protectedAtCloseCents?: number;
+  /** the frictionless reference at the live mid (null without a mid) */
+  protectedAtMidCents?: number | null;
+  /** protectedAtMid minus protectedAtClose: what crossing both books cost (null without a mid) */
+  unwindFrictionCents?: number | null;
+  /**
+   * Who left. Absent: the scan's schedule (a showcase position, nobody paid). "unwind": the holder
+   * of a lock tapped Leave early, through the unwind endpoint; the terms were quoted again at the
+   * tap and this line is what they were.
+   */
+  source?: "unwind";
+  /**
+   * With source "unwind": whether the hedge sale was sent to its venue. False records the sale at
+   * the book's price without an order behind it (the executor buys and does not sell yet); the
+   * operator sells by hand and the receipt says so.
+   */
+  hedgeSent?: boolean;
+  /**
+   * With route "member_sale" and source "unwind": the buy-back as the venue confirmed it. Here
+   * protectedAtCloseCents is the net cash the lock left in the member's balance (the sale less the
+   * buy-back) with the position back to its size, positionProceedsCents is 0 (nothing was sold
+   * naked) and hedgeProceedsCents is 0.
+   */
+  memberBuyBack?: MemberBuyBackRecord;
+}
+
+/** The market finalized on Kalshi with an official result. */
+export interface ShadowSettleRecord {
+  type: "settle";
+  at: string;
+  ticker: string;
+  result: "yes" | "no";
+  /** the rule text read again at this settlement, against the pin (ruleEvidence.checkRule); absent before 2026-10-11 */
+  ruleCheck?: RuleCheck;
+  /** the Kalshi reference market's text read again, against `referenceRule`; only where that pin exists */
+  referenceRuleCheck?: RuleCheck;
+}
+
+/** The market never produced a result (e.g. postponed and rebooked). */
+export interface ShadowVoidRecord {
+  type: "void";
+  at: string;
+  ticker: string;
+  reason: string;
+}
+
+/**
+ * CASH. Money that actually moved between the writer and the holder of a lock, as the operator
+ * recorded it. The record's other lines say what is owed (the credit at the tap; at settlement
+ * the floor to the holder when the side lost, or the slice above the cap back to the writer when
+ * it won); this line says a payment happened. Direction follows the leg. Several lines may pay
+ * one leg. The scan's showcase positions never carry one: nobody is paid on paper. A lock the
+ * holder left early owes one "close" leg instead of floor or handback: what our hedge sale
+ * fetched less the cap slice, to the holder when positive, to the writer when negative.
+ */
+export type CashLeg = "credit" | "floor" | "handback" | "close";
+export const CASH_LEGS: readonly CashLeg[] = ["credit", "floor", "handback", "close"];
+export interface ShadowCashRecord {
+  type: "cash";
+  at: string;
+  ticker: string;
+  leg: CashLeg;
+  /** cents that moved, positive */
+  cents: number;
+  /** how it moved, in the operator's words ("venue transfer", "wire", "cash") */
+  method?: string;
+  /** the payment's own reference; stays in the raw ledger, never on a page */
+  ref?: string;
+  note?: string;
+}
+
+/**
+ * PRE-LOCK RE-READ. The open position priced again, both routes and every reference, from fresh
+ * books a fixed time before its lock (shadowCounterfactuals.ShadowReread). Measurement only: the
+ * terms written at open stand; this line says what the same protection would have cost on each
+ * book at the moment a late tap's hedge would actually be placed. One per position; a second is
+ * ignored on replay. `unread` records a read that could not happen for a reason that will not
+ * change before the lock, so the tick does not try again.
+ */
+export type ShadowRereadRecord =
+  | ({ type: "reread"; ticker: string; phase: "prelock" } & ShadowReread)
+  /** the same read taken when a held reference book first showed levels (shadowCounterfactuals.ShadowBookOpenReread); one per position */
+  | ({ type: "reread"; ticker: string; phase: "book_open" } & ShadowBookOpenReread)
+  /** the same read taken a fixed number of minutes after the start, in play (shadowCounterfactuals.ShadowInGameReread); one per position */
+  | ({ type: "reread"; ticker: string; phase: "in_game" } & ShadowInGameReread);
+
+export type ShadowRecord = ShadowOpenRecord | ShadowSettleRecord | ShadowVoidRecord | ShadowCloseRecord | ShadowCashRecord | ShadowRereadRecord;
+
+export interface ShadowPosition extends Omit<ShadowOpenRecord, "type"> {
+  status: "open" | "settled" | "void" | "closed";
+  result?: "yes" | "no";
+  settledAt?: string;
+  ruleCheck?: RuleCheck;
+  referenceRuleCheck?: RuleCheck;
+  voidReason?: string;
+  /**
+   * Total with protection. Settled: (cap if yes, floor if no) x contracts + credit.
+   * Closed: what the user walked away with at live prices, credit included.
+   */
+  protectedCents?: number;
+  /** Total without protection. Settled: 100 x contracts if yes, 0 if no. Closed: the same sale, no protection ever bought. */
+  nakedCents?: number;
+  /** protected minus naked; positive = protection paid off on this event */
+  deltaCents?: number;
+  /** writer side, settled or closed: what the protection writer netted after hedge and credit */
+  writerCents?: number;
+  hedgePayoutCents?: number;
+  /** closed only: when, at what mid and fill, and what crossing the books cost against the mid */
+  closedAt?: string;
+  closeYesMidCents?: number | null;
+  closeYesFillCents?: number;
+  closeFeesCents?: number;
+  closeProtectedAtMidCents?: number | null;
+  closeUnwindFrictionCents?: number | null;
+  /** closed only: the schedule or the holder's own Leave early; with "unwind", whether the hedge sale went to the venue */
+  closeSource?: "schedule" | "unwind";
+  closeHedgeSent?: boolean;
+  /** an early close was attempted and a leg had no depth; the position runs to settlement */
+  closeUnpriced?: { at: string; reason: string };
+  /**
+   * Which lock on this market this is: a market whose protection was removed (closed) may be
+   * locked again, and the new lock is the next generation. Absent on the first (1). Every
+   * generation stays on the record with its own settlement; only the latest can be open.
+   */
+  generation?: number;
+  /** payments recorded on this lock, oldest first; the reference and note stay in the raw ledger */
+  cash?: Array<{ at: string; leg: CashLeg; cents: number; method?: string }>;
+  /** the pre-lock re-read, when one has happened (operator information, like the counterfactuals) */
+  prelock?: ShadowReread;
+  /** the read taken the moment a held reference book opened, when the record caught one (operator information) */
+  bookOpen?: ShadowBookOpenReread;
+  /** the in-game read, when the game has had one (never on the public record) */
+  inGame?: ShadowInGameReread;
+  /** closed, route "member_sale": the buy-back as the venue confirmed it */
+  closeMemberBuyBack?: MemberBuyBackRecord;
+}
+
+/** One leg of cash the lock owes, and how much of it has been paid. */
+export interface CashLegDue {
+  leg: CashLeg;
+  /** who receives it */
+  to: "holder" | "writer";
+  dueCents: number;
+  paidCents: number;
+  outstandingCents: number;
+  /** when the leg was paid in full, else null */
+  paidAt: string | null;
+}
+
+/**
+ * What a lock owes and to whom, from its terms and its state, with the cash lines applied. The
+ * credit is owed to the holder from the tap. A settled position adds one leg: the floor to the
+ * holder when the side lost, the slice above the cap to the writer when it won (none when the
+ * cap is $1). A void position owes nothing beyond the credit. A closed one owes the close leg:
+ * the holder's own sale is theirs on the venue, so between the two parties what moves is our
+ * hedge sale less the cap slice the holder sold at the tap (closeNetCents), to whichever side it
+ * favors; nothing when it nets to zero.
+ */
+export function cashDue(p: ShadowPosition): CashLegDue[] {
+  // a member's own sale: every dollar moved inside their own venue account; nothing is owed between the parties
+  if (p.route === "member_sale") return [];
+  const owed: Array<{ leg: CashLeg; to: "holder" | "writer"; dueCents: number }> = [{ leg: "credit", to: "holder", dueCents: p.creditCents }];
+  if (p.status === "settled" && p.result === "no") owed.push({ leg: "floor", to: "holder", dueCents: centsOf(p.floorCents, p.contracts) });
+  if (p.status === "settled" && p.result === "yes" && p.capCents < 100) owed.push({ leg: "handback", to: "writer", dueCents: fundingOf(p) });
+  if (p.status === "closed") {
+    const net = closeNetCents(p);
+    if (net !== 0) owed.push({ leg: "close", to: net > 0 ? "holder" : "writer", dueCents: Math.abs(net) });
+  }
+  return owed.map((o) => {
+    const lines = (p.cash ?? []).filter((c) => c.leg === o.leg);
+    const paidCents = lines.reduce((s, c) => s + c.cents, 0);
+    const outstandingCents = Math.max(0, o.dueCents - paidCents);
+    return { ...o, paidCents, outstandingCents, paidAt: lines.length > 0 && outstandingCents === 0 ? lines[lines.length - 1].at : null };
+  });
+}
+
+/** Outcome math for one settled position — the same totals the app banner shows. */
+export function settlePayouts(
+  p: Pick<ShadowOpenRecord, "contracts" | "floorCents" | "capCents" | "creditCents"> & Partial<Pick<ShadowOpenRecord, "memberSale">>,
+  result: "yes" | "no",
+): { protectedCents: number; nakedCents: number; deltaCents: number } {
+  // a member's own sale settles on its whole-contract totals: the cash the fills paid, plus $1 on every riding contract when the side won
+  const protectedCents = p.memberSale ? (result === "yes" ? p.memberSale.capTotalCents : p.memberSale.floorTotalCents) : result === "yes" ? capTotalCents(p) : floorTotalCents(p);
+  const nakedCents = result === "yes" ? centsOf(100, p.contracts) : 0;
+  return { protectedCents, nakedCents, deltaCents: protectedCents - nakedCents };
+}
+
+type WriterInputs = Pick<
+  ShadowOpenRecord,
+  "contracts" | "floorCents" | "capCents" | "creditCents" | "takeCents" | "hedgeCostCents" | "hedgeUnitsMilli"
+> &
+  Partial<Pick<ShadowOpenRecord, "route">>;
+
+/**
+ * What a close moves between the parties beyond the credit: hedge sale minus the cap slice. By the
+ * close identity (protected = own sale + hedge sale - funding + credit) this is protected - naked -
+ * credit, so it is read off the position's own totals; positive favors the holder.
+ */
+export function closeNetCents(p: Pick<ShadowPosition, "status" | "protectedCents" | "nakedCents" | "creditCents">): number {
+  if (p.status !== "closed") return 0;
+  return (p.protectedCents ?? 0) - (p.nakedCents ?? 0) - p.creditCents;
+}
+
+/** The cap slice the holder sells: (100 - cap) x N cents, received by the writer in the YES state. */
+export function fundingOf(p: Pick<ShadowOpenRecord, "contracts" | "capCents">): number {
+  return centsDownOf(100 - p.capCents, p.contracts);
+}
+
+/**
+ * Hedge cost as quoted, venue fees included. Always derived from the pricer's
+ * credit identity, which is exact by construction: gross = funding - hedgeCost
+ * - fees and credit = gross - take, so hedgeCost + fees = funding - credit -
+ * take. The stored `hedgeCostCents` is informational; deriving here means a
+ * record that stored the leg without its fee cannot overstate the writer.
+ */
+export function hedgeCostOf(p: WriterInputs): number {
+  return fundingOf(p) - p.creditCents - p.takeCents;
+}
+
+/** NO units the hedge bought, milli. Older records: the pricer's sizing rule, rounded up. */
+export function hedgeUnitsOf(p: WriterInputs): number {
+  return p.hedgeUnitsMilli ?? centsUpOf(p.floorCents + 100 - p.capCents, p.contracts) * 10;
+}
+
+/**
+ * Writer-side cash flows for one settled position, integer cents.
+ *
+ *   YES: writer keeps the cap slice (100 - cap) x N, hedge pays nothing.
+ *   NO:  writer pays the floor x N, hedge pays $1 per unit bought.
+ *   Both: writer paid the hedge at open and the credit at settlement.
+ *
+ * Because the hedge is sized to (floor + 100 - cap) x N, the two states net
+ * to the same number: the published take (plus the round-up on NO). That is
+ * the whole point of leg-for-leg: the writer's result does not depend on who
+ * won. This function computes both legs explicitly so the record can be
+ * checked rather than believed.
+ */
+export function writerPayouts(
+  p: WriterInputs,
+  result: "yes" | "no",
+): { writerCents: number; hedgePayoutCents: number; hedgeCostCents: number; fundingCents: number } {
+  // a member's own sale: no writer, no hedge, no funding; every figure is zero by construction
+  if (p.route === "member_sale") return { writerCents: 0, hedgePayoutCents: 0, hedgeCostCents: 0, fundingCents: 0 };
+  const funding = fundingOf(p);
+  const hedgeCost = hedgeCostOf(p);
+  const hedgePayout = result === "no" ? Math.round(hedgeUnitsOf(p) / 10) : 0;
+  const holderLeg = result === "yes" ? funding : -centsOf(p.floorCents, p.contracts);
+  return {
+    writerCents: holderLeg + hedgePayout - p.creditCents - hedgeCost,
+    hedgePayoutCents: hedgePayout,
+    hedgeCostCents: hedgeCost,
+    fundingCents: funding,
+  };
+}
+
+/**
+ * Mark one counterfactual collar against the same official result the live
+ * position settled on: the holder's delta versus naked and the writer's net.
+ */
+export function altOutcome(
+  alt: ShadowAltTerms,
+  contracts: number,
+  result: "yes" | "no",
+): { deltaCents: number; writerCents: number } | null {
+  if (!alt.ok) return null;
+  const terms = { contracts, floorCents: alt.floorCents, capCents: alt.capCents, creditCents: alt.creditCents };
+  const { deltaCents } = settlePayouts(terms, result);
+  const { writerCents } = writerPayouts(
+    { ...terms, takeCents: alt.takeCents, hedgeCostCents: alt.hedgeCostCents, hedgeUnitsMilli: alt.hedgeUnitsMilli },
+    result,
+  );
+  return { deltaCents, writerCents };
+}
+
+export function appendShadowRecord(path: string, record: ShadowRecord): void {
+  mkdirSync(dirname(path), { recursive: true });
+  appendFileSync(path, `${JSON.stringify(record)}\n`, "utf8");
+}
+
+/** Size and line count of the raw ledger, for healthz and the export endpoint. */
+export function ledgerStats(path: string): { exists: boolean; bytes: number; records: number } {
+  if (!existsSync(path)) return { exists: false, bytes: 0, records: 0 };
+  const raw = readFileSync(path, "utf8");
+  return {
+    exists: true,
+    bytes: Buffer.byteLength(raw, "utf8"),
+    records: raw.split("\n").filter((l) => l.trim().length > 0).length,
+  };
+}
+
+/**
+ * Replay the JSONL into positions. Unreadable lines are skipped, never fatal. The current lock on
+ * each market comes first, in the order the markets were first opened; earlier generations (locks
+ * whose protection was removed before the market was locked again) follow, every one still on the
+ * record with its own settlement. `currentShadowPositions` keeps only the former.
+ */
+export function loadShadowPositions(path: string): ShadowPosition[] {
+  if (!existsSync(path)) return [];
+  const byTicker = new Map<string, ShadowPosition>();
+  const earlier: ShadowPosition[] = [];
+  for (const line of readFileSync(path, "utf8").split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    let rec: ShadowRecord;
+    try {
+      rec = JSON.parse(trimmed) as ShadowRecord;
+    } catch {
+      continue;
+    }
+    if (rec.type === "open") {
+      const prev = byTicker.get(rec.ticker);
+      // first quote wins; replays cannot double-open. A market whose protection was removed opens again as the next generation
+      if (prev && prev.status !== "closed") continue;
+      const { type: _t, ...fields } = rec;
+      if (prev) earlier.push(prev);
+      byTicker.set(rec.ticker, { ...fields, status: "open", ...(prev ? { generation: (prev.generation ?? 1) + 1 } : {}) });
+    } else if (rec.type === "settle") {
+      const pos = byTicker.get(rec.ticker);
+      if (!pos || pos.status !== "open") continue;
+      const pay = settlePayouts(pos, rec.result);
+      const writer = writerPayouts(pos, rec.result);
+      byTicker.set(rec.ticker, {
+        ...pos,
+        status: "settled",
+        result: rec.result,
+        settledAt: rec.at,
+        ...(rec.ruleCheck ? { ruleCheck: rec.ruleCheck } : {}),
+        ...(rec.referenceRuleCheck ? { referenceRuleCheck: rec.referenceRuleCheck } : {}),
+        ...pay,
+        writerCents: writer.writerCents,
+        hedgePayoutCents: writer.hedgePayoutCents,
+      });
+    } else if (rec.type === "void") {
+      const pos = byTicker.get(rec.ticker);
+      if (!pos || pos.status !== "open") continue;
+      byTicker.set(rec.ticker, { ...pos, status: "void", voidReason: rec.reason });
+    } else if (rec.type === "cash") {
+      // a payment lands on the position in any state; one that names no position is noise. The
+      // settlement of a removed protection lands on the lock that was removed, which may be an
+      // earlier generation once the market was locked again
+      const cur = byTicker.get(rec.ticker);
+      if (!cur || !CASH_LEGS.includes(rec.leg) || !Number.isInteger(rec.cents) || rec.cents <= 0) continue;
+      const line = { at: rec.at, leg: rec.leg, cents: rec.cents, ...(rec.method ? { method: rec.method } : {}) };
+      let pastAt = -1;
+      if (rec.leg === "close" && cur.status !== "closed") {
+        for (let i = earlier.length - 1; i >= 0; i--) {
+          if (earlier[i].ticker === rec.ticker && earlier[i].status === "closed") {
+            pastAt = i;
+            break;
+          }
+        }
+      }
+      if (pastAt >= 0) earlier[pastAt] = { ...earlier[pastAt], cash: [...(earlier[pastAt].cash ?? []), line] };
+      else byTicker.set(rec.ticker, { ...cur, cash: [...(cur.cash ?? []), line] });
+    } else if (rec.type === "reread") {
+      // one read per position per phase, the first; it lands in any state (the position may have settled since)
+      const pos = byTicker.get(rec.ticker);
+      if (!pos) continue;
+      if (rec.phase === "prelock") {
+        if (pos.prelock) continue;
+        const { type: _t, ticker: _k, phase: _p, ...reread } = rec;
+        byTicker.set(rec.ticker, { ...pos, prelock: reread });
+      } else if (rec.phase === "book_open") {
+        if (pos.bookOpen) continue;
+        const { type: _t, ticker: _k, phase: _p, ...reread } = rec;
+        byTicker.set(rec.ticker, { ...pos, bookOpen: reread });
+      } else if (rec.phase === "in_game") {
+        if (pos.inGame) continue;
+        const { type: _t, ticker: _k, phase: _p, ...reread } = rec;
+        byTicker.set(rec.ticker, { ...pos, inGame: reread });
+      }
+    } else if (rec.type === "close") {
+      const pos = byTicker.get(rec.ticker);
+      if (!pos || pos.status !== "open") continue;
+      if (!rec.priced) {
+        // One attempt per position: the schedule does not retry, the position settles as usual.
+        byTicker.set(rec.ticker, { ...pos, closeUnpriced: { at: rec.at, reason: rec.reason ?? "a leg had no depth" } });
+        continue;
+      }
+      const protectedCents = rec.protectedAtCloseCents ?? 0;
+      const nakedCents = rec.positionProceedsCents ?? 0;
+      byTicker.set(rec.ticker, {
+        ...pos,
+        status: "closed",
+        closedAt: rec.at,
+        protectedCents,
+        nakedCents,
+        deltaCents: protectedCents - nakedCents,
+        // leg for leg: the user pays live prices on both legs, so the writer keeps exactly the take
+        writerCents: pos.takeCents,
+        hedgePayoutCents: rec.hedgeProceedsCents ?? 0,
+        closeYesMidCents: rec.yesMidCents ?? null,
+        closeYesFillCents: rec.yesFillCents,
+        closeFeesCents: rec.feesCents ?? 0,
+        closeProtectedAtMidCents: rec.protectedAtMidCents ?? null,
+        closeUnwindFrictionCents: rec.unwindFrictionCents ?? null,
+        closeSource: rec.source ?? "schedule",
+        ...(rec.source === "unwind" ? { closeHedgeSent: rec.hedgeSent ?? false } : {}),
+        ...(rec.memberBuyBack ? { closeMemberBuyBack: rec.memberBuyBack } : {}),
+      });
+    }
+  }
+  return [...byTicker.values(), ...earlier];
+}
+
+/** The current lock on each market: the first position per ticker as loadShadowPositions orders them. */
+export function currentShadowPositions(positions: ShadowPosition[]): ShadowPosition[] {
+  const seen = new Set<string>();
+  return positions.filter((p) => (seen.has(p.ticker) ? false : (seen.add(p.ticker), true)));
+}
+
+/** Whether a market can be locked by this ledger's holder: no lock on it, or the current lock's protection was removed. */
+export function lockable(positions: ShadowPosition[], ticker: string): boolean {
+  const cur = positions.find((p) => p.ticker === ticker);
+  return !cur || cur.status === "closed";
+}
+
+export interface ShadowSummary {
+  openCount: number;
+  settledCount: number;
+  voidCount: number;
+  /** settled events where the result went against the holder — the floor paid */
+  floorSaves: number;
+  /** settled events where the holder won — upside above the cap was given up */
+  capGiveups: number;
+  /** across settled events, totals in cents */
+  protectedTotalCents: number;
+  nakedTotalCents: number;
+  deltaTotalCents: number;
+  /** realized delta as bps of total staked notional (100c x contracts per event) */
+  realizedDeltaBpsOfStake: number | null;
+  /** average quoted EV cost across all opened positions, bps */
+  quotedAvgEvBps: number | null;
+  routeSplit: Record<string, number>;
+  firstOpenedAt: string | null;
+  lastSettledAt: string | null;
+  /** the protection writer's side of the same settled events */
+  writer: ShadowWriterSummary;
+  /**
+   * THE HEDGE-LAYER IDENTITY. Leg-for-leg, the writer's realized P&L on settled events must equal
+   * the published take booked on them: the hedge pays the floor, the cap slice pays the hedge, and
+   * nothing depends on who won. `gapCents` is what is left after that (per-position round-ups on
+   * hedge units, in the writer's favour by construction); `holds` is |gap| within tolerance.
+   */
+  identity: ShadowIdentity;
+  /** the same book cut by hedge route, by league and by kind (sports vs crypto): where protection is cheap and where it is rich */
+  segments: { byRoute: Record<string, ShadowSegment>; byLeague: Record<string, ShadowSegment>; byKind: Record<string, ShadowSegment> };
+  /** what each proposed rule would have done on the same events (shadow v2 records only) */
+  counterfactuals: ShadowCounterfactualSummary;
+  /** positions the user left before the lock, priced as a new trade at live books */
+  closed: ShadowClosedSummary;
+  /** contracts protection put on public books, one total; the public page does not cut it by venue */
+  flow: ShadowFlowSummary;
+}
+
+/**
+ * FLOW ONTO PUBLIC BOOKS. Every protection buys its other side on a public book at open, leg for
+ * leg, so the record is also a count of the contracts protection sent to those books. Summed as
+ * one total over every position opened in the window, whatever it later became (settled, closed
+ * early, voided): the hedge was placed at open. The split by route stays on the operator report.
+ */
+export interface ShadowFlowWindow {
+  /** positions opened in the window */
+  positions: number;
+  /** units bought on public books at open, milli (hedgeUnitsOf) */
+  contractsMilli: number;
+  /** the same in whole contracts, rounded */
+  contracts: number;
+  /** what those units cost at open, cents, venue fees included (hedgeCostOf) */
+  hedgeNotionalCents: number;
+  /** stake protected in the window, cents: 100c x contracts per position */
+  stakeCents: number;
+  /** when the window opens: now minus the window for the rolling one, first open for all time */
+  since: string | null;
+}
+
+export interface ShadowFlowSummary {
+  asOf: string;
+  windowDays: number;
+  last30Days: ShadowFlowWindow;
+  allTime: ShadowFlowWindow;
+}
+
+export const FLOW_WINDOW_DAYS = 30;
+
+export function summarizeFlow(positions: readonly ShadowPosition[], now: Date = new Date()): ShadowFlowSummary {
+  const nowMs = now.getTime();
+  const sinceMs = nowMs - FLOW_WINDOW_DAYS * 86_400_000;
+  const empty = (since: string | null): ShadowFlowWindow => ({ positions: 0, contractsMilli: 0, contracts: 0, hedgeNotionalCents: 0, stakeCents: 0, since });
+  const recent = empty(new Date(sinceMs).toISOString());
+  const all = empty(null);
+  for (const p of positions) {
+    const openedMs = Date.parse(p.at);
+    const units = hedgeUnitsOf(p);
+    const cost = hedgeCostOf(p);
+    const stake = centsOf(100, p.contracts);
+    for (const w of openedMs >= sinceMs && openedMs <= nowMs ? [recent, all] : [all]) {
+      w.positions += 1;
+      w.contractsMilli += units;
+      w.hedgeNotionalCents += cost;
+      w.stakeCents += stake;
+    }
+    if (all.since === null || p.at < all.since) all.since = p.at;
+  }
+  for (const w of [recent, all]) w.contracts = Math.round(w.contractsMilli / 1000);
+  return { asOf: now.toISOString(), windowDays: FLOW_WINDOW_DAYS, last30Days: recent, allTime: all };
+}
+
+export interface ShadowClosedSummary {
+  count: number;
+  /** attempts where a leg had no depth; those positions ran to settlement instead */
+  unpriced: number;
+  /** across closed: what users walked away with, credit included */
+  protectedAtCloseCents: number;
+  /** across closed: the same sale with no protection ever bought */
+  nakedAtCloseCents: number;
+  /** protected minus naked at the close */
+  deltaCents: number;
+  /** across closed positions that had a live mid: the frictionless reference and what crossing the books cost */
+  withMid: number;
+  protectedAtMidCents: number;
+  unwindFrictionCents: number;
+  /** venue taker fees paid on both legs */
+  feesCents: number;
+  /** the writer's result on closed positions and the take booked on them: equal by construction */
+  writerPnlCents: number;
+  takeBookedCents: number;
+  /** stake across closed positions (100c x contracts), for percentages */
+  stakeCents: number;
+  byKind: Record<string, { closed: number; unpriced: number }>;
+}
+
+export interface ShadowIdentity {
+  settled: number;
+  writerPnlCents: number;
+  takeBookedCents: number;
+  /** writer P&L minus take booked */
+  gapCents: number;
+  /** |gap| as bps of settled stake (null when nothing settled) */
+  gapBpsOfStake: number | null;
+  /** hedge payouts received minus hedge cost paid (the hedge funded itself when >= 0) */
+  hedgeNetCents: number;
+  /** cap slices kept minus floors paid minus credits paid (the holder legs) */
+  holderLegsNetCents: number;
+  /** true when the gap is inside the rounding tolerance (1¢ per settled position) */
+  holds: boolean;
+}
+
+/** One slice of the book (a route or a league): what protection cost there, quoted and realized. */
+export interface ShadowSegment {
+  opened: number;
+  settled: number;
+  stakeSettledCents: number;
+  /** mean quoted EV cost across every position opened in this slice, bps of naked EV */
+  quotedAvgEvBps: number | null;
+  /** across settled: holder's protected minus naked, and as bps of settled stake */
+  holderDeltaCents: number;
+  holderDeltaBpsOfStake: number | null;
+  creditsCents: number;
+  takeCents: number;
+  writerPnlCents: number;
+}
+
+const newSegment = (): ShadowSegment => ({
+  opened: 0,
+  settled: 0,
+  stakeSettledCents: 0,
+  quotedAvgEvBps: null,
+  holderDeltaCents: 0,
+  holderDeltaBpsOfStake: null,
+  creditsCents: 0,
+  takeCents: 0,
+  writerPnlCents: 0,
+});
+
+/** One rule's book: quoted, settled, and what it would have paid each side. */
+export interface RuleBook {
+  /** positions where this rule produced a quote */
+  quoted: number;
+  /** positions where this rule refused (the live quote existed; this rule declined) */
+  refused: number;
+  settled: number;
+  /** stake across settled positions this rule quoted, cents */
+  stakeSettledCents: number;
+  /** credits this rule would have paid on quoted positions */
+  creditsCents: number;
+  /** take this rule would have booked on quoted positions */
+  takeCents: number;
+  /** average quoted EV cost across quoted positions, bps */
+  quotedAvgEvBps: number | null;
+  /** across settled: holder's protected minus naked */
+  holderDeltaCents: number;
+  /** across settled: writer's net */
+  writerPnlCents: number;
+}
+
+export interface ShadowCounterfactualSummary {
+  /** first open that carried counterfactuals; null when none do yet */
+  recordedSince: string | null;
+  positionsWithCounterfactuals: number;
+  /** the live book restricted to the same positions, for a like-for-like baseline */
+  baseline: RuleBook;
+  tiers: Record<ProtectionTier, RuleBook>;
+  feeRules: Record<FeeRuleLabel, RuleBook>;
+  /** capacity curve: the default tier at each size multiple, same books */
+  capacity: Array<
+    RuleBook & {
+      mult: number;
+      /** gross credit summed over quoted probes, cents */
+      grossCreditCents: number;
+      /** stake summed over quoted probes (100c x contracts at that size) */
+      stakeQuotedCents: number;
+      /** gross credit as bps of stake, quoted probes */
+      grossBpsOfStake: number | null;
+    }
+  >;
+  /**
+   * ROUTING, MEASURED. Sports positions whose open carried both routes: the live book (the cheaper
+   * route, as written) beside the same positions forced onto each route. "Kalshi-only" is what a
+   * production hedge that must run on the market's own No side would have cost; the pairwise
+   * numbers compare only positions both routes quoted, so a refusal on one side does not pass as
+   * a saving. Operator report only.
+   */
+  routes: ShadowRouteComparison;
+  /**
+   * OWN SALE AND BETTER BID, MEASURED. Each line that carries the measurement priced as the
+   * holder's own sale into their venue's bids and as our better bid with the other side bought on
+   * another venue, beside the collar the record wrote (shadowSaleAlternatives.ts). The public
+   * page prints the counts and the sums; the per-book split names routes and stays with the operator.
+   */
+  sale: ShadowSaleSummary;
+}
+
+export interface ShadowRouteComparison {
+  recordedSince: string | null;
+  /** sports positions carrying route counterfactuals (crypto has one route and is left out) */
+  positions: number;
+  /** how the record actually routed those positions */
+  liveRouteSplit: Record<string, number>;
+  live: RuleBook;
+  kalshiOnly: RuleBook;
+  crossOnly: RuleBook;
+  /** positions both routes quoted; the pairwise fields below are over these */
+  bothQuoted: number;
+  /** average quoted EV cost, kalshi-only minus live, bps (positive: kalshi-only is richer) */
+  kalshiOnlyExtraEvBps: number | null;
+  /** credits users would have been paid under kalshi-only minus what the live route paid, cents */
+  kalshiOnlyCreditDeltaCents: number;
+  /** positions the live route quoted that kalshi-only refused: coverage lost, not cost */
+  kalshiOnlyRefusedWhereLiveQuoted: number;
+  /**
+   * Other regulated exchanges read as price references: the same positions priced on each one's
+   * book. One row per reference id the record has seen; empty until a reference is configured.
+   */
+  references: ReferenceBookComparison[];
+  /**
+   * Exchanges that publish only yesterday's tape: the opposing outcome's last print there against
+   * the price the live hedge paid. A sign of where that venue trades, never a quote; empty until
+   * a print source is configured.
+   */
+  prints: ReferencePrintComparison[];
+}
+
+/** One print source beside the live hedge's price, over the positions whose open carried it. */
+export interface ReferencePrintComparison {
+  id: string;
+  /** positions whose open read this source (printed or not) */
+  positions: number;
+  /** positions where the venue had printed the opposing outcome on its last published day */
+  printed: number;
+  /** positions where it had not, or the file could not be read */
+  unprinted: number;
+  /** average of (last print minus the live hedge's average price), cents, over printed positions */
+  avgGapCents: number | null;
+  /** printed positions where the venue's last print was above the live hedge's price */
+  richer: number;
+  /** printed positions where it was below */
+  cheaper: number;
+  /** average age of the print at the quote, hours */
+  avgAgeHours: number | null;
+  /** average contracts the venue traded that day on the opposing outcome */
+  avgDayContracts: number | null;
+}
+
+/** One reference book beside the live route, over the positions whose open carried it. */
+export interface ReferenceBookComparison extends RuleBook {
+  id: string;
+  /** positions whose open read this reference (listed or not) */
+  positions: number;
+  /** positions where the venue listed the game and a book was read */
+  listed: number;
+  /** positions where it did not list the game, or could not be reached: coverage, not price */
+  unlisted: number;
+  /** positions this reference quoted that the live route also quoted; the pairwise fields are over these */
+  bothQuoted: number;
+  /** average quoted EV cost, this reference minus live, bps (positive: the reference is richer) */
+  extraEvBps: number | null;
+  /** credits users would have been paid on this reference minus what the live route paid, cents */
+  creditDeltaCents: number;
+}
+
+function emptyRuleBook(): RuleBook {
+  return {
+    quoted: 0,
+    refused: 0,
+    settled: 0,
+    stakeSettledCents: 0,
+    creditsCents: 0,
+    takeCents: 0,
+    quotedAvgEvBps: null,
+    holderDeltaCents: 0,
+    writerPnlCents: 0,
+  };
+}
+
+/** Fold one alternative (or the live terms) into a rule book; `evSum` accumulates for the average. */
+function foldRule(
+  book: RuleBook & { evSum?: number },
+  alt: ShadowAltTerms,
+  contracts: number,
+  result: "yes" | "no" | undefined,
+): void {
+  if (!alt.ok) {
+    book.refused += 1;
+    return;
+  }
+  book.quoted += 1;
+  book.creditsCents += alt.creditCents;
+  book.takeCents += alt.takeCents;
+  book.evSum = (book.evSum ?? 0) + alt.evCostBps;
+  if (result) {
+    const out = altOutcome(alt, contracts, result);
+    if (out) {
+      book.settled += 1;
+      book.stakeSettledCents += centsOf(100, contracts);
+      book.holderDeltaCents += out.deltaCents;
+      book.writerPnlCents += out.writerCents;
+    }
+  }
+}
+
+function finishRule<T extends RuleBook & { evSum?: number }>(book: T): T {
+  book.quotedAvgEvBps = book.quoted > 0 ? Math.round((book.evSum ?? 0) / book.quoted) : null;
+  delete book.evSum;
+  return book;
+}
+
+/** The live position's own terms in the alternative shape, so the baseline folds through the same code. */
+function liveAsAlt(p: ShadowPosition): Extract<ShadowAltTerms, { ok: true }> {
+  return {
+    ok: true,
+    floorCents: p.floorCents,
+    capCents: p.capCents,
+    creditCents: p.creditCents,
+    grossCreditCents: p.creditCents + p.takeCents,
+    takeCents: p.takeCents,
+    takeRule: p.takeRule ?? (p.takeCents === 0 ? "waived" : "share"),
+    feesCents: p.feesCents,
+    hedgeCostCents: hedgeCostOf(p),
+    hedgeUnitsMilli: hedgeUnitsOf(p),
+    evCostBps: p.evCostBps,
+  };
+}
+
+export function summarizeCounterfactuals(positions: ShadowPosition[]): ShadowCounterfactualSummary {
+  const withCf = positions.filter((p) => p.counterfactuals && p.status !== "void");
+  const baseline: RuleBook & { evSum?: number } = emptyRuleBook();
+  const tiers = Object.fromEntries(PROTECTION_TIERS.map((t) => [t, emptyRuleBook()])) as Record<
+    ProtectionTier,
+    RuleBook & { evSum?: number }
+  >;
+  const feeRules = Object.fromEntries(FEE_RULE_LABELS.map((l) => [l, emptyRuleBook()])) as Record<
+    FeeRuleLabel,
+    RuleBook & { evSum?: number }
+  >;
+  const capacity = SIZE_LADDER_MULTS.map((mult) => ({
+    ...emptyRuleBook(),
+    mult,
+    grossCreditCents: 0,
+    stakeQuotedCents: 0,
+    grossBpsOfStake: null as number | null,
+    evSum: 0,
+  }));
+  let recordedSince: string | null = null;
+  const routes: ShadowRouteComparison & { live: RuleBook & { evSum?: number }; kalshiOnly: RuleBook & { evSum?: number }; crossOnly: RuleBook & { evSum?: number } } = {
+    recordedSince: null,
+    positions: 0,
+    liveRouteSplit: {},
+    live: emptyRuleBook(),
+    kalshiOnly: emptyRuleBook(),
+    crossOnly: emptyRuleBook(),
+    bothQuoted: 0,
+    kalshiOnlyExtraEvBps: null,
+    kalshiOnlyCreditDeltaCents: 0,
+    kalshiOnlyRefusedWhereLiveQuoted: 0,
+    references: [],
+    prints: [],
+  };
+  let routeEvDiffSum = 0;
+  const prints = new Map<string, ReferencePrintComparison & { gapSum: number; ageSum: number; contractsSum: number }>();
+  const printRow = (id: string) => {
+    let row = prints.get(id);
+    if (!row) {
+      row = { id, positions: 0, printed: 0, unprinted: 0, avgGapCents: null, richer: 0, cheaper: 0, avgAgeHours: null, avgDayContracts: null, gapSum: 0, ageSum: 0, contractsSum: 0 };
+      prints.set(id, row);
+    }
+    return row;
+  };
+  const references = new Map<string, ReferenceBookComparison & { evSum?: number; evDiffSum: number }>();
+  const referenceRow = (id: string) => {
+    let row = references.get(id);
+    if (!row) {
+      row = { ...emptyRuleBook(), id, positions: 0, listed: 0, unlisted: 0, bothQuoted: 0, extraEvBps: null, creditDeltaCents: 0, evDiffSum: 0 };
+      references.set(id, row);
+    }
+    return row;
+  };
+
+  for (const p of withCf) {
+    const cf = p.counterfactuals as ShadowCounterfactuals;
+    if (!recordedSince || p.at < recordedSince) recordedSince = p.at;
+    const result = p.status === "settled" ? p.result : undefined;
+    foldRule(baseline, liveAsAlt(p), p.contracts, result);
+    if (cf.routes && p.kind === "sports") {
+      routes.positions += 1;
+      if (!routes.recordedSince || p.at < routes.recordedSince) routes.recordedSince = p.at;
+      routes.liveRouteSplit[p.route] = (routes.liveRouteSplit[p.route] ?? 0) + 1;
+      const live = liveAsAlt(p);
+      const k = cf.routes.kalshi_self;
+      const x = cf.routes.polymarket;
+      foldRule(routes.live, live, p.contracts, result);
+      foldRule(routes.kalshiOnly, k, p.contracts, result);
+      foldRule(routes.crossOnly, x, p.contracts, result);
+      if (k.ok) {
+        routes.bothQuoted += 1;
+        routeEvDiffSum += k.evCostBps - live.evCostBps;
+        routes.kalshiOnlyCreditDeltaCents += k.creditCents - live.creditCents;
+      } else {
+        routes.kalshiOnlyRefusedWhereLiveQuoted += 1;
+      }
+    }
+    // A reference that did not list the game is coverage, not a refusal on price: it is counted
+    // apart and kept out of the rule book, so quoted + refused is over listed games only.
+    for (const ref of cf.references ?? []) {
+      if (p.kind !== "sports") continue;
+      const row = referenceRow(ref.id);
+      row.positions += 1;
+      const listed = ref.terms.ok || ref.bestAskMilli !== null;
+      if (!listed) {
+        row.unlisted += 1;
+        continue;
+      }
+      row.listed += 1;
+      const live = liveAsAlt(p);
+      foldRule(row, ref.terms, p.contracts, result);
+      if (ref.terms.ok) {
+        row.bothQuoted += 1;
+        row.evDiffSum += ref.terms.evCostBps - live.evCostBps;
+        row.creditDeltaCents += ref.terms.creditCents - live.creditCents;
+      }
+    }
+    for (const pr of cf.prints ?? []) {
+      if (p.kind !== "sports") continue;
+      const row = printRow(pr.id);
+      row.positions += 1;
+      if (!pr.ok) {
+        row.unprinted += 1;
+        continue;
+      }
+      row.printed += 1;
+      row.gapSum += pr.gapCents;
+      row.ageSum += pr.ageHours;
+      row.contractsSum += pr.dayContracts;
+      if (pr.gapCents > 0) row.richer += 1;
+      else if (pr.gapCents < 0) row.cheaper += 1;
+    }
+    for (const tier of PROTECTION_TIERS) {
+      const alt = cf.alternatives?.[tier];
+      // A tier the venues did not fund distinctly collapsed into another; it is not a refusal.
+      if (alt) foldRule(tiers[tier], alt, p.contracts, result);
+    }
+    for (const label of FEE_RULE_LABELS) {
+      const alt = cf.feeRules?.[label];
+      if (alt) foldRule(feeRules[label], alt, p.contracts, result);
+    }
+    for (const probe of cf.sizeLadder ?? []) {
+      const row = capacity.find((c) => c.mult === probe.mult);
+      if (!row) continue;
+      foldRule(row, probe.terms, probe.contracts, result);
+      if (probe.terms.ok) {
+        row.grossCreditCents += probe.terms.grossCreditCents;
+        row.stakeQuotedCents += centsOf(100, probe.contracts);
+      }
+    }
+  }
+
+  for (const row of capacity) {
+    row.grossBpsOfStake =
+      row.stakeQuotedCents > 0 ? Math.round((row.grossCreditCents / row.stakeQuotedCents) * 10_000) : null;
+  }
+  routes.kalshiOnlyExtraEvBps = routes.bothQuoted > 0 ? Math.round(routeEvDiffSum / routes.bothQuoted) : null;
+  routes.references = [...references.values()]
+    .sort((a, b) => a.id.localeCompare(b.id))
+    .map(({ evDiffSum, ...row }) => {
+      const done = finishRule(row);
+      done.extraEvBps = done.bothQuoted > 0 ? Math.round(evDiffSum / done.bothQuoted) : null;
+      return done;
+    });
+  routes.prints = [...prints.values()]
+    .sort((a, b) => a.id.localeCompare(b.id))
+    .map(({ gapSum, ageSum, contractsSum, ...row }) => ({
+      ...row,
+      avgGapCents: row.printed > 0 ? Math.round((gapSum / row.printed) * 10) / 10 : null,
+      avgAgeHours: row.printed > 0 ? Math.round((ageSum / row.printed) * 10) / 10 : null,
+      avgDayContracts: row.printed > 0 ? Math.round(contractsSum / row.printed) : null,
+    }));
+  return {
+    recordedSince,
+    positionsWithCounterfactuals: withCf.length,
+    baseline: finishRule(baseline),
+    tiers: Object.fromEntries(PROTECTION_TIERS.map((t) => [t, finishRule(tiers[t])])) as Record<ProtectionTier, RuleBook>,
+    feeRules: Object.fromEntries(FEE_RULE_LABELS.map((l) => [l, finishRule(feeRules[l])])) as Record<FeeRuleLabel, RuleBook>,
+    capacity: capacity.map((row) => finishRule(row)),
+    routes: { ...routes, live: finishRule(routes.live), kalshiOnly: finishRule(routes.kalshiOnly), crossOnly: finishRule(routes.crossOnly) },
+    sale: summarizeSaleAlternatives(positions),
+  };
+}
+
+/**
+ * The writer's book: what selling the protection and carrying the hedge
+ * actually netted, in integer cents, split so a desk can check the claim
+ * that the result does not depend on who won.
+ */
+export interface ShadowWriterSummary {
+  /** realized across settled events: cap slices kept + hedge payouts - floors paid - credits - hedge cost */
+  settledPnlCents: number;
+  /** realized as bps of settled stake (100c x contracts per event) */
+  settledPnlBpsOfStake: number | null;
+  /** the same P&L split by outcome; leg-for-leg means these are the published take either way */
+  pnlWhenHolderWonCents: number;
+  pnlWhenHolderLostCents: number;
+  settledWhenHolderWon: number;
+  settledWhenHolderLost: number;
+  /** gross legs across settled events */
+  capSlicesKeptCents: number;
+  floorsPaidCents: number;
+  creditsPaidCents: number;
+  hedgeCostCents: number;
+  hedgePayoutsCents: number;
+  /** published take booked on settled events (what P&L should equal, before round-up) */
+  takeBookedCents: number;
+  /** published take locked on still-open positions, realized when they settle */
+  takeLockedOpenCents: number;
+  byLeague: Record<string, { settled: number; open: number; pnlCents: number; stakeCents: number }>;
+}
+
+export function summarizeShadow(positions: ShadowPosition[], now: Date = new Date()): ShadowSummary {
+  const settled = positions.filter((p) => p.status === "settled");
+  const routeSplit: Record<string, number> = {};
+  let quotedBpsSum = 0;
+  let firstOpenedAt: string | null = null;
+  const byLeague: ShadowWriterSummary["byLeague"] = {};
+  let takeLockedOpenCents = 0;
+  const segRoute: Record<string, ShadowSegment & { evSum: number }> = {};
+  const segLeague: Record<string, ShadowSegment & { evSum: number }> = {};
+  const segKind: Record<string, ShadowSegment & { evSum: number }> = {};
+  const seg = (m: Record<string, ShadowSegment & { evSum: number }>, k: string) => (m[k] ??= { ...newSegment(), evSum: 0 });
+  for (const p of positions) {
+    routeSplit[p.route] = (routeSplit[p.route] ?? 0) + 1;
+    quotedBpsSum += p.evCostBps;
+    for (const sg of [seg(segRoute, p.route), seg(segLeague, p.league), seg(segKind, p.kind)]) {
+      sg.opened += 1;
+      sg.evSum += p.evCostBps;
+    }
+    if (!firstOpenedAt || p.at < firstOpenedAt) firstOpenedAt = p.at;
+    const lg = (byLeague[p.league] ??= { settled: 0, open: 0, pnlCents: 0, stakeCents: 0 });
+    if (p.status === "open") {
+      lg.open += 1;
+      takeLockedOpenCents += p.takeCents;
+    }
+  }
+  let protectedTotalCents = 0;
+  let nakedTotalCents = 0;
+  let stakeCents = 0;
+  let lastSettledAt: string | null = null;
+  const w: ShadowWriterSummary = {
+    settledPnlCents: 0,
+    settledPnlBpsOfStake: null,
+    pnlWhenHolderWonCents: 0,
+    pnlWhenHolderLostCents: 0,
+    settledWhenHolderWon: 0,
+    settledWhenHolderLost: 0,
+    capSlicesKeptCents: 0,
+    floorsPaidCents: 0,
+    creditsPaidCents: 0,
+    hedgeCostCents: 0,
+    hedgePayoutsCents: 0,
+    takeBookedCents: 0,
+    takeLockedOpenCents,
+    byLeague,
+  };
+  for (const p of settled) {
+    protectedTotalCents += p.protectedCents ?? 0;
+    nakedTotalCents += p.nakedCents ?? 0;
+    stakeCents += centsOf(100, p.contracts);
+    if (p.settledAt && (!lastSettledAt || p.settledAt > lastSettledAt)) lastSettledAt = p.settledAt;
+
+    const result = p.result ?? "no";
+    const wp = writerPayouts(p, result);
+    w.settledPnlCents += wp.writerCents;
+    w.creditsPaidCents += p.creditCents;
+    w.hedgeCostCents += wp.hedgeCostCents;
+    w.hedgePayoutsCents += wp.hedgePayoutCents;
+    w.takeBookedCents += p.takeCents;
+    if (result === "yes") {
+      w.pnlWhenHolderWonCents += wp.writerCents;
+      w.settledWhenHolderWon += 1;
+      w.capSlicesKeptCents += wp.fundingCents;
+    } else {
+      w.pnlWhenHolderLostCents += wp.writerCents;
+      w.settledWhenHolderLost += 1;
+      w.floorsPaidCents += centsOf(p.floorCents, p.contracts);
+    }
+    const lg = byLeague[p.league];
+    lg.settled += 1;
+    lg.pnlCents += wp.writerCents;
+    lg.stakeCents += centsOf(100, p.contracts);
+    for (const sg of [seg(segRoute, p.route), seg(segLeague, p.league), seg(segKind, p.kind)]) {
+      sg.settled += 1;
+      sg.stakeSettledCents += centsOf(100, p.contracts);
+      sg.holderDeltaCents += (p.protectedCents ?? 0) - (p.nakedCents ?? 0);
+      sg.creditsCents += p.creditCents;
+      sg.takeCents += p.takeCents;
+      sg.writerPnlCents += wp.writerCents;
+    }
+  }
+  w.settledPnlBpsOfStake = stakeCents > 0 ? Math.round((w.settledPnlCents / stakeCents) * 10_000) : null;
+  const deltaTotalCents = protectedTotalCents - nakedTotalCents;
+  const finishSegment = (m: Record<string, ShadowSegment & { evSum: number }>): Record<string, ShadowSegment> =>
+    Object.fromEntries(
+      Object.entries(m).map(([k, v]) => {
+        const { evSum, ...rest } = v;
+        return [
+          k,
+          {
+            ...rest,
+            quotedAvgEvBps: rest.opened > 0 ? Math.round(evSum / rest.opened) : null,
+            holderDeltaBpsOfStake: rest.stakeSettledCents > 0 ? Math.round((rest.holderDeltaCents / rest.stakeSettledCents) * 10_000) : null,
+          },
+        ];
+      }),
+    );
+  const closed = summarizeClosed(positions);
+  const gapCents = w.settledPnlCents - w.takeBookedCents;
+  const identity: ShadowIdentity = {
+    settled: settled.length,
+    writerPnlCents: w.settledPnlCents,
+    takeBookedCents: w.takeBookedCents,
+    gapCents,
+    gapBpsOfStake: stakeCents > 0 ? Math.round((Math.abs(gapCents) / stakeCents) * 10_000) : null,
+    hedgeNetCents: w.hedgePayoutsCents - w.hedgeCostCents,
+    holderLegsNetCents: w.capSlicesKeptCents - w.floorsPaidCents - w.creditsPaidCents,
+    holds: Math.abs(gapCents) <= settled.length,
+  };
+  return {
+    openCount: positions.filter((p) => p.status === "open").length,
+    settledCount: settled.length,
+    voidCount: positions.filter((p) => p.status === "void").length,
+    floorSaves: settled.filter((p) => p.result === "no").length,
+    capGiveups: settled.filter((p) => p.result === "yes").length,
+    protectedTotalCents,
+    nakedTotalCents,
+    deltaTotalCents,
+    realizedDeltaBpsOfStake:
+      stakeCents > 0 ? Math.round((deltaTotalCents / stakeCents) * 10_000) : null,
+    quotedAvgEvBps: positions.length > 0 ? Math.round(quotedBpsSum / positions.length) : null,
+    routeSplit,
+    firstOpenedAt,
+    lastSettledAt,
+    writer: w,
+    identity,
+    segments: { byRoute: finishSegment(segRoute), byLeague: finishSegment(segLeague), byKind: finishSegment(segKind) },
+    counterfactuals: summarizeCounterfactuals(positions),
+    closed,
+    flow: summarizeFlow(positions, now),
+  };
+}
+
+/** The early closes: what leaving at live prices paid the user and cost against the mid. */
+export function summarizeClosed(positions: ShadowPosition[]): ShadowClosedSummary {
+  const out: ShadowClosedSummary = {
+    count: 0,
+    unpriced: 0,
+    protectedAtCloseCents: 0,
+    nakedAtCloseCents: 0,
+    deltaCents: 0,
+    withMid: 0,
+    protectedAtMidCents: 0,
+    unwindFrictionCents: 0,
+    feesCents: 0,
+    writerPnlCents: 0,
+    takeBookedCents: 0,
+    stakeCents: 0,
+    byKind: {},
+  };
+  for (const p of positions) {
+    const k = (out.byKind[p.kind] ??= { closed: 0, unpriced: 0 });
+    if (p.closeUnpriced && p.status !== "closed") {
+      out.unpriced += 1;
+      k.unpriced += 1;
+    }
+    if (p.status !== "closed") continue;
+    out.count += 1;
+    k.closed += 1;
+    out.protectedAtCloseCents += p.protectedCents ?? 0;
+    out.nakedAtCloseCents += p.nakedCents ?? 0;
+    out.feesCents += p.closeFeesCents ?? 0;
+    out.writerPnlCents += p.writerCents ?? 0;
+    out.takeBookedCents += p.takeCents;
+    out.stakeCents += centsOf(100, p.contracts);
+    if (typeof p.closeProtectedAtMidCents === "number" && typeof p.closeUnwindFrictionCents === "number") {
+      out.withMid += 1;
+      out.protectedAtMidCents += p.closeProtectedAtMidCents;
+      out.unwindFrictionCents += p.closeUnwindFrictionCents;
+    }
+  }
+  out.deltaCents = out.protectedAtCloseCents - out.nakedAtCloseCents;
+  return out;
+}
+
+/** Column order of the positions CSV; stable so downstream sheets do not break. The operator's export starts with these. */
+const POSITIONS_CSV_BASE_COLUMNS = [
+  "ticker",
+  "league",
+  "kind",
+  "side",
+  "event",
+  "event_time_utc",
+  "opened_at_utc",
+  "status",
+  "result",
+  "settled_at_utc",
+  "route",
+  "contracts",
+  "mark_c",
+  "floor_c",
+  "cap_c",
+  "credit_c",
+  "take_c",
+  "fees_c",
+  "hedge_units_milli",
+  "hedge_cost_c",
+  "hedge_payout_c",
+  "holder_protected_c",
+  "holder_naked_c",
+  "holder_delta_c",
+  "writer_pnl_c",
+  "ev_cost_bps",
+  "tier",
+  "closed_at_utc",
+  "close_mid_c",
+  "close_fill_c",
+  "close_fees_c",
+  "close_friction_c",
+] as const;
+
+/**
+ * What the public CSV leaves to the operator's: where the other side was bought, and our own
+ * side of each row (the take, the fees, the hedge and our result). The totals are on the page.
+ */
+const POSITIONS_CSV_OPERATOR_ONLY: ReadonlySet<string> = new Set(["take_c", "fees_c", "hedge_units_milli", "hedge_cost_c", "hedge_payout_c", "writer_pnl_c"]);
+
+/** The public columns: the base set without the operator's, and `shape` (own sale or hedged lock) where the operator's has `route`. */
+export const POSITIONS_CSV_PUBLIC_COLUMNS: readonly string[] = POSITIONS_CSV_BASE_COLUMNS.filter((c) => !POSITIONS_CSV_OPERATOR_ONLY.has(c)).map((c) => (c === "route" ? "shape" : c));
+
+/** Every column: the base set, then the recorded fee rule and every counterfactual (operator export). */
+export const POSITIONS_CSV_COLUMNS = [
+  ...POSITIONS_CSV_BASE_COLUMNS,
+  "take_rule",
+  "take_share_c",
+  "take_min_c",
+  ...PROTECTION_TIERS.flatMap((t) => [
+    `${t}_floor_c`,
+    `${t}_cap_c`,
+    `${t}_credit_c`,
+    `${t}_take_c`,
+    `${t}_ev_bps`,
+    `${t}_holder_delta_c`,
+    `${t}_writer_pnl_c`,
+  ]),
+  ...FEE_RULE_LABELS.flatMap((l) => [`${l}_take_c`, `${l}_credit_c`, `${l}_refused`]),
+  ...SIZE_LADDER_MULTS.filter((m) => m > 1).flatMap((m) => [`x${m}_contracts`, `x${m}_gross_c`, `x${m}_credit_c`, `x${m}_refused`]),
+] as const;
+
+function csvCell(v: string | number | null | undefined): string {
+  if (v === null || v === undefined) return "";
+  const s = String(v);
+  return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+}
+
+/**
+ * One row per position, every status, all money in integer cents. The full scope is the
+ * spreadsheet form of the ledger: what the operator opens to recompute the writer's P&L row by
+ * row. The public scope carries the holder's side of every row and no venue the other side was
+ * bought on.
+ */
+export type PositionsCsvScope = "public" | "full";
+
+export function positionsCsv(positions: ShadowPosition[], scope: PositionsCsvScope = "full"): string {
+  const columns = scope === "public" ? POSITIONS_CSV_PUBLIC_COLUMNS : POSITIONS_CSV_COLUMNS;
+  const rows = [...positions]
+    .sort((a, b) => a.at.localeCompare(b.at))
+    .map((p) => {
+      const settled = p.status === "settled" || p.status === "closed";
+      const closed = p.status === "closed";
+      const cells: Array<string | number | null | undefined> = [
+        p.ticker,
+        p.league,
+        p.kind,
+        p.sideName,
+        p.eventTitle,
+        p.eventTimeIso,
+        p.at,
+        p.status,
+        p.result ?? "",
+        p.settledAt ?? "",
+        p.route,
+        p.contracts,
+        p.markCents,
+        p.floorCents,
+        p.capCents,
+        p.creditCents,
+        p.takeCents,
+        p.feesCents,
+        hedgeUnitsOf(p),
+        hedgeCostOf(p),
+        settled ? (p.hedgePayoutCents ?? 0) : "",
+        settled ? (p.protectedCents ?? 0) : "",
+        settled ? (p.nakedCents ?? 0) : "",
+        settled ? (p.deltaCents ?? 0) : "",
+        settled ? (p.writerCents ?? 0) : "",
+        p.evCostBps,
+        p.tier ?? "",
+        closed ? (p.closedAt ?? "") : "",
+        closed ? (p.closeYesMidCents ?? "") : "",
+        closed ? (p.closeYesFillCents ?? "") : "",
+        closed ? (p.closeFeesCents ?? 0) : "",
+        closed ? (p.closeUnwindFrictionCents ?? "") : "",
+      ];
+      const out =
+        scope === "full"
+          ? [...cells, ...counterfactualCells(p)]
+          : cells.flatMap((v, i) => {
+              const col = POSITIONS_CSV_BASE_COLUMNS[i];
+              if (POSITIONS_CSV_OPERATOR_ONLY.has(col)) return [];
+              return [col === "route" ? (p.route === "member_sale" ? "direct lock" : "hedged lock") : v];
+            });
+      return out.map(csvCell).join(",");
+    });
+  return [columns.join(","), ...rows].join("\n") + "\n";
+}
+
+/** The operator-only columns for one row; blanks when the record predates counterfactuals. */
+function counterfactualCells(p: ShadowPosition): Array<string | number> {
+  const cf = p.counterfactuals;
+  const result = p.status === "settled" ? p.result : undefined;
+  const head: Array<string | number> = [p.takeRule ?? "", p.takeShareCents ?? "", p.takeMinimumCents ?? ""];
+  const tierCells = PROTECTION_TIERS.flatMap((t) => {
+    const alt = cf?.alternatives?.[t];
+    if (!alt || !alt.ok) return ["", "", "", "", "", "", ""];
+    const out = result ? altOutcome(alt, p.contracts, result) : null;
+    return [alt.floorCents, alt.capCents, alt.creditCents, alt.takeCents, alt.evCostBps, out?.deltaCents ?? "", out?.writerCents ?? ""];
+  });
+  const feeCells = FEE_RULE_LABELS.flatMap((l) => {
+    const alt = cf?.feeRules?.[l];
+    if (!alt) return ["", "", ""];
+    return alt.ok ? [alt.takeCents, alt.creditCents, 0] : ["", "", 1];
+  });
+  const sizeCells = SIZE_LADDER_MULTS.filter((m) => m > 1).flatMap((m) => {
+    const probe = cf?.sizeLadder?.find((s) => s.mult === m);
+    if (!probe) return ["", "", "", ""];
+    return probe.terms.ok
+      ? [probe.contracts, probe.terms.grossCreditCents, probe.terms.creditCents, 0]
+      : [probe.contracts, "", "", 1];
+  });
+  return [...head, ...tierCells, ...feeCells, ...sizeCells];
+}

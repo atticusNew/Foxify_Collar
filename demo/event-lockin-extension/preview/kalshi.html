@@ -1,0 +1,186 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Kalshi (stand-in)</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="ael-venue" content="kalshi">
+<style>
+  *{box-sizing:border-box}
+  body{margin:0;background:#fff;color:#191919;font-family:-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;font-size:14px}
+  a{color:inherit;text-decoration:none}
+  .top{position:sticky;top:0;z-index:5;background:#fff;border-bottom:1px solid #ededed}
+  header{display:flex;align-items:center;gap:26px;padding:10px 24px;height:52px}
+  .logo{font-weight:900;font-size:24px;color:#28cc95;letter-spacing:-.02em}
+  nav{display:flex;gap:26px;font-size:12px;font-weight:700;letter-spacing:.08em;text-transform:uppercase}
+  nav .live{color:#e0323c;margin-left:4px}
+  .search{flex:1;max-width:200px;background:#f1f1f1;border-radius:999px;padding:9px 16px;color:#737373;font-size:13px;margin-left:auto}
+  .cash{text-align:center;font-size:11px;color:#737373;line-height:1.2}.cash b{display:block;color:#191919;font-size:13px}
+  .pf{text-align:center;font-size:11px;color:#191919;font-weight:600;line-height:1.2;padding:0 4px;border-radius:6px}.pf.on{color:#06b67a}
+  .pf i{display:block;width:16px;height:12px;margin:0 auto 2px;border-bottom:2px solid currentColor;transform:skewY(-20deg)}
+  .cats{display:flex;gap:18px;padding:8px 24px;font-size:14px;color:#555;align-items:center;white-space:nowrap;overflow:hidden}
+  .cats .sel{color:#3b7dd8}.cats .on{color:#191919;font-weight:600}
+  .wrap{display:grid;grid-template-columns:200px 1fr;min-height:110vh}
+  aside{border-right:1px solid #ededed;padding:22px 20px;font-size:14px}
+  aside .h{font-size:11px;letter-spacing:.1em;color:#999;font-weight:700;margin-bottom:12px}
+  aside a{display:flex;gap:12px;align-items:center;padding:8px 0;color:#333}aside a.on{color:#06b67a}
+  aside i{width:16px;height:16px;border-radius:50%;background:#ccc;display:inline-block}aside a.on i{background:#06b67a}
+  aside .all{margin-top:22px;border-top:1px solid #ededed;padding-top:16px}aside .all a{justify-content:space-between;color:#333}aside .all small{color:#999}
+  main{padding:22px 40px 80px;max-width:820px}
+  h2{font-size:20px;margin:28px 0 14px}h2:first-child{margin-top:0}
+  .card{border:1px solid #e6e6e6;border-radius:12px;padding:14px 16px;margin-bottom:14px;background:#fff}
+  .ev{display:flex;gap:12px;align-items:center;margin-bottom:12px}
+  .ev .ico{width:40px;height:40px;border-radius:10px;background:#2b4a9c;flex:none}
+  .ev b{display:block;font-size:15px}.ev small{color:#737373;font-size:12px}
+  .side{display:grid;grid-template-columns:28px 1fr 60px 70px;gap:12px;align-items:center;padding:8px 0}
+  .side .helm{width:24px;height:22px;border-radius:50% 50% 40% 40%;background:#c33}
+  .side .nm{font-size:15px;border-bottom:2px solid #e02a38;padding-bottom:4px;align-self:end}.side .nm small{color:#737373;font-size:13px;margin-left:6px}
+  .side .mult{color:#737373;font-size:12px;text-align:right}
+  .pct{border:1px solid #06b67a;border-radius:999px;color:#06b67a;font-weight:700;font-size:13px;text-align:center;padding:7px 0;cursor:pointer;background:#fff}
+  .pct:hover,.pct.sel{background:#06b67a;color:#fff}
+  .vol{font-size:12px;color:#737373;margin-top:8px}
+  .ptitle{font-size:22px;font-weight:700;margin:0 0 4px}.psub{color:#737373;font-size:13px;margin-bottom:18px}
+  .yn{display:flex;gap:10px;margin:10px 0}.yn button{flex:1;border:1px solid #e6e6e6;border-radius:10px;padding:12px;font-size:14px;font-weight:600;background:#fff;cursor:pointer}
+  .yn .y.sel{background:#06b67a;color:#fff;border-color:#06b67a}.yn .n.sel{background:#e02a38;color:#fff;border-color:#e02a38}
+  .panel{display:grid;grid-template-columns:1fr 300px;gap:30px}
+  .order{border:1px solid #e6e6e6;border-radius:12px;padding:16px;height:max-content;position:sticky;top:120px}
+  .order h4{margin:0 0 10px;font-size:14px}
+  .fld{display:flex;justify-content:space-between;align-items:center;border:1px solid #e6e6e6;border-radius:10px;padding:10px 12px;margin:8px 0}
+  .fld label{font-size:12px;color:#737373}.fld input{border:0;width:80px;text-align:right;font-size:16px;font-weight:700;outline:0;font-family:inherit}
+  .sum{display:flex;justify-content:space-between;font-size:13px;color:#555;padding:4px 0}.sum b{color:#191919}
+  .go{width:100%;border:0;border-radius:10px;background:#06b67a;color:#fff;font-weight:700;font-size:14px;padding:12px;margin-top:10px;cursor:pointer}
+  .go:disabled{background:#cfe9df;cursor:default}
+  .back{display:inline-block;color:#737373;margin-bottom:14px;font-size:13px}
+  /* portfolio */
+  .wallets{display:flex;gap:14px;margin-bottom:14px}.wal{border:1px solid #d0d0d0;border-radius:10px;padding:12px 16px;min-width:190px}.wal.on{border-width:2px;border-color:#191919;background:#f1f1f1}
+  .wal small{display:block;font-size:10.5px;letter-spacing:.1em;font-weight:700;color:#555}.wal b{font-size:26px;font-family:ui-monospace,Menlo,monospace}
+  .apy{font-size:14px;margin-bottom:18px;padding-bottom:18px;border-bottom:1px solid #ededed}.apy span{color:#737373}
+  .stats{display:flex;gap:38px;font-size:13px;color:#737373;margin-bottom:18px}.stats b{display:block;color:#191919;margin-top:4px;font-weight:600}.stats .g{color:#06b67a}
+  .promo{border:1px solid #06b67a;border-radius:8px;padding:10px 14px;font-size:13px;margin-bottom:22px;display:flex;justify-content:space-between}.promo span{color:#737373;margin-left:14px}
+  .ptabs{display:flex;gap:26px;font-size:12px;letter-spacing:.1em;font-weight:700;color:#999;border-bottom:1px solid #ededed;padding-bottom:12px;margin-bottom:6px;text-transform:uppercase}
+  .ptabs a{padding:0 2px}.ptabs a.selected{color:#191919}
+  .empty{text-align:center;color:#737373;padding:90px 0 60px;font-size:16px}.empty .art{width:40px;height:30px;border-radius:999px;background:#eee;margin:0 auto 24px}
+  .pos{display:grid;grid-template-columns:44px 1fr auto auto auto auto;gap:14px;align-items:center;padding:16px 4px;border-bottom:1px solid #ededed}
+  .pos .ico{width:44px;height:44px;border-radius:10px;background:#2b4a9c}
+  .pos .t{font-size:15px;font-weight:600}.pos .m{font-size:12.5px;color:#737373;margin-top:3px}
+  .pos .chip{display:inline-block;border-radius:6px;padding:2px 8px;font-size:12px;font-weight:700;margin-right:8px}
+  .chip.yes{background:#e3f7ef;color:#06b67a}.chip.no{background:#fde8ea;color:#e02a38}
+  .pos .num{text-align:right;font-size:12px;color:#737373;min-width:110px}.pos .num b{display:block;color:#191919;font-size:14px;font-weight:600;margin-top:2px}
+  .pos .num .g{color:#06b67a}
+  .pos .sell{border:1px solid #d0d0d0;border-radius:999px;padding:8px 18px;background:#fff;font-weight:600;font-size:13px;cursor:pointer}
+  .pos .st{font-size:12px;color:#737373;border:1px solid #e6e6e6;border-radius:999px;padding:4px 10px}
+</style></head>
+<body>
+<div class="top">
+<header><a class="logo" href="#/">Kalshi</a><nav><a href="#/">Markets</a><a>Perps</a><a>Live<span class="live">118</span></a><a>Pro</a><a>More &#x25BE;</a></nav>
+<div class="search">&#x1F50D;&nbsp; Trade on any...</div><div class="cash"><b id="bal">$0.00</b>Cash</div><a class="pf" id="nav-pf" href="#/portfolio"><i></i>Portfolio</a><span>&#x1F3C6;</span><span>&#x1F514;</span><span>&#x2630;</span></header>
+<div class="cats"><span>&#x1F4CB;</span><span>Trending</span><span class="sel">Midterms</span><span>Elections</span><span class="on">Sports</span><span>Politics</span><span>Culture</span><span>Crypto</span><span>Commodities</span><span>Climate</span><span>Economics</span><span>Mentions</span><span>Finance</span><span>Tech &amp; Science</span></div>
+</div>
+<div class="wrap">
+<aside id="aside"></aside>
+<main id="main"></main>
+</div>
+<script>
+// A stand-in for Kalshi's web app: hash routes, a sports list of game cards (two clubs, a multiplier
+// and the Yes price as a percentage), a market page with Yes/No and an order panel in contracts at a
+// price in cents, and a Portfolio page with POSITIONS / ORDERS / HISTORY where each position is
+// "Yes · Club" or "No · Club", N contracts at an average price in cents, with its cost and payout.
+const LEAGUE = "NBA";
+const GAMES = [
+  { id: "BKNBOS", day: "Later today", when: "Oct 27 @ 7:30PM", away: ["BKN", "Nets", "1-3"], home: ["BOS", "Celtics", "3-1"], yes: [21, 80], vol: "$1,812,440" },
+  { id: "DETNYK", day: "Later today", when: "Oct 27 @ 8:00PM", away: ["DET", "Pistons", "2-2"], home: ["NYK", "Knicks", "3-1"], yes: [40, 61], vol: "$2,406,915" },
+  { id: "SACSAS", day: "Later today", when: "Oct 27 @ 8:00PM", away: ["SAC", "Kings", "1-3"], home: ["SAS", "Spurs", "3-1"], yes: [38, 63], vol: "$984,120" },
+  { id: "PORLAL", day: "Later today", when: "Oct 27 @ 11:00PM", away: ["POR", "Trail Blazers", "2-2"], home: ["LAL", "Lakers", "3-1"], yes: [45, 56], vol: "$1,530,002" },
+  { id: "WASCLE", day: "Tomorrow", when: "Oct 28 @ 7:00PM", away: ["WAS", "Wizards", "1-3"], home: ["CLE", "Cavaliers", "4-0"], yes: [25, 76], vol: "$1,102,660" },
+  { id: "NYKCHI", day: "Tomorrow", when: "Oct 28 @ 8:00PM", away: ["NYK", "Knicks", "3-1"], home: ["CHI", "Bulls", "1-3"], yes: [77, 24], vol: "$901,315" },
+];
+const LEFT = ["NBA", "NFL", "Pro Baseball", "NHL", "NCAA Football", "WNBA"];
+// Positions as the Portfolio lists them. side: yes|no on the named club. open: resting order (ORDERS tab). settled: HISTORY.
+const POS = JSON.parse(sessionStorage.getItem("kalshi-pos") || "null") || [
+  { g: "DETNYK", club: "home", side: "yes", n: 15.95, c: 62, placed: "Oct 27 · 12:48 PM" },
+  { g: "BKNBOS", club: "away", side: "no", n: 15, c: 79, placed: "Oct 27 · 12:51 PM" },
+  { g: "PORLAL", club: "home", side: "yes", n: 10, c: 56, placed: "Oct 26 · 6:40 PM" },
+  { g: "DETNYK", club: "home", side: "yes", n: 10, c: 48, spread: "-2.5", placed: "Oct 27 · 12:55 PM" },
+  { g: "SACSAS", club: "home", side: "yes", n: 10, c: 60, open: true, placed: "Oct 27 · 11:02 AM" },
+  { g: "MEMNYK", club: "home", side: "yes", n: 10, c: 70, settled: "won", when: "Oct 25 @ 7:30PM", away: ["MEM", "Grizzlies"], home: ["NYK", "Knicks"], placed: "Oct 24 · 7:15 PM" },
+];
+const save = () => sessionStorage.setItem("kalshi-pos", JSON.stringify(POS));
+const $ = (s) => document.querySelector(s);
+const usd = (c) => "$" + (c / 100).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const gameOf = (p) => GAMES.find((g) => g.id === p.g) || { id: p.g, when: p.when, away: p.away, home: p.home, yes: [50, 50] };
+const title = (g) => g.away[0] + " " + g.away[1] + " vs " + g.home[0] + " " + g.home[1];
+const order = { g: null, club: "away", side: "yes", n: 10 };
+const asideHtml = () =>
+  '<div class="h">FEATURED</div>' + LEFT.map((l, i) => '<a href="#/"' + (i === 0 ? ' class="on"' : "") + "><i></i>" + l + "</a>").join("") +
+  '<div class="all"><a><span>All</span><small>(4148)</small></a><a><span>Football</span><small>(1119) &#x25BE;</small></a><a><span>Tennis</span><small>(261) &#x25BE;</small></a><a><span>Baseball</span><small>(131) &#x25BE;</small></a><a><span>Soccer</span><small>(901) &#x25BE;</small></a></div>';
+const sideRow = (g, club) => {
+  const t = club === "away" ? g.away : g.home;
+  const yes = g.yes[club === "away" ? 0 : 1];
+  const mult = (100 / yes).toFixed(2) + "x";
+  return '<div class="side"><span class="helm" style="background:' + (club === "away" ? "#c33" : "#2a5a9a") + '"></span><span class="nm" style="border-color:' + (club === "away" ? "#e02a38" : "#2b4a9c") + '">' + t[0] + " " + t[1] + " <small>(" + t[2] + ')</small></span><span class="mult">' + mult + '</span><a class="pct" href="#/market/' + g.id + "/" + club + '">' + yes + "%</a></div>";
+};
+const listHtml = () => {
+  const days = [...new Set(GAMES.map((g) => g.day))];
+  return days.map((d) => "<h2>" + d + "</h2>" + GAMES.filter((g) => g.day === d).map((g) => '<div class="card"><div class="ev"><span class="ico"></span><div><b>' + title(g) + "</b><small>" + g.when + " &middot; " + LEAGUE + "</small></div></div>" + sideRow(g, "away") + sideRow(g, "home") + '<div class="vol">' + g.vol + " vol</div></div>").join("")).join("");
+};
+const marketHtml = (g) => {
+  const t = order.club === "away" ? g.away : g.home;
+  const yes = g.yes[order.club === "away" ? 0 : 1];
+  const price = order.side === "yes" ? yes : 100 - yes;
+  const n = Number(order.n) || 0;
+  return '<a class="back" href="#/">&lsaquo; ' + LEAGUE + '</a><div class="panel"><div><div class="ptitle">' + title(g) + '</div><div class="psub">' + g.when + " &middot; " + LEAGUE + " &middot; " + g.vol + " vol</div>" +
+    GAMES.filter((x) => x.id === g.id).map(() => ["away", "home"].map((club) => { const tt = club === "away" ? g.away : g.home; const y = g.yes[club === "away" ? 0 : 1]; return '<div class="card"><div class="ev"><span class="helm" style="background:' + (club === "away" ? "#c33" : "#2a5a9a") + ';width:28px;height:26px;border-radius:50% 50% 40% 40%"></span><div><b>' + tt[0] + " " + tt[1] + " wins</b><small>" + y + "% chance</small></div></div>" +
+      '<div class="yn"><button class="y' + (order.club === club && order.side === "yes" ? " sel" : "") + '" data-club="' + club + '" data-side="yes">Yes ' + y + "&cent;</button><button class=\"n" + (order.club === club && order.side === "no" ? " sel" : "") + '" data-club="' + club + '" data-side="no">No ' + (100 - y) + "&cent;</button></div></div>"; }).join("")).join("") +
+    "</div>" +
+    '<div class="order"><h4>Buy &middot; ' + (order.side === "yes" ? "Yes" : "No") + " " + t[0] + " " + t[1] + '</h4><div class="fld"><label>Contracts</label><input id="n" type="number" min="1" value="' + order.n + '"></div>' +
+    '<div class="sum"><span>Avg price</span><b>' + price + '&cent;</b></div><div class="sum"><span>Total cost</span><b>' + usd(n * price) + '</b></div><div class="sum"><span>Payout if ' + (order.side === "yes" ? "Yes" : "No") + "</span><b>" + usd(n * 100) + "</b></div>" +
+    '<button class="go" id="place"' + (n > 0 ? "" : " disabled") + ">Place order</button></div></div>";
+};
+const posRow = (p) => {
+  const g = gameOf(p);
+  const t = p.club === "away" ? g.away : g.home;
+  const mkt = title(g) + (p.spread ? ": Spread" : "");
+  const chip = '<span class="chip ' + p.side + '">' + (p.side === "yes" ? "Yes" : "No") + "</span>" + t[0] + " " + t[1] + (p.spread ? " " + p.spread : "");
+  const cost = Math.round(p.n * p.c);
+  const val = p.settled ? (p.settled === "won" ? p.n * 100 : 0) : Math.round(p.n * (p.c + 2));
+  const right = p.open
+    ? '<div class="num">Limit<b>' + p.c + '&cent;</b></div><div class="num">Cost<b>' + usd(cost) + '</b></div><span class="st">Resting</span>'
+    : p.settled
+      ? '<div class="num">Cost<b>' + usd(cost) + '</b></div><div class="num">Payout<b class="' + (p.settled === "won" ? "g" : "") + '">' + usd(val) + '</b></div><span class="st">Settled &middot; ' + p.settled + "</span>"
+      : '<div class="num">Cost<b>' + usd(cost) + '</b></div><div class="num">To win<b>' + usd(Math.round(p.n * 100)) + '</b></div><div class="num">Value<b class="g">' + usd(val) + '</b></div><button class="sell">Sell</button>';
+  return '<div class="pos"><span class="ico"></span><div><div class="t">' + mkt + '</div><div class="m">' + chip + " &middot; " + p.n + " contracts &middot; Avg " + p.c + "&cent; &middot; " + g.when + " &middot; placed " + p.placed + "</div></div>" + right + "</div>";
+};
+const TABS = ["positions", "orders", "history"];
+const portfolioHtml = (tab) => {
+  const list = tab === "orders" ? POS.filter((p) => p.open) : tab === "history" ? POS.filter((p) => p.settled) : POS.filter((p) => !p.open && !p.settled);
+  const cash = POS.filter((p) => !p.settled).reduce((s, p) => s + p.n * p.c, 0);
+  return '<div class="wallets"><div class="wal on"><small>PREDICTIONS</small><b>' + usd(cash) + '</b></div><div class="wal"><small>INVEST</small><b>$0</b></div></div>' +
+    '<div class="apy">&#x1F4B0; <b>Earn 3.5% APY</b> <span>Positions &amp; cash &nbsp;&rsaquo;</span></div>' +
+    '<div class="stats"><div>Change (24h)<b class="g">+$0 (+0%)</b></div><div>Unrealized Return<b class="g">+$0 (+0%)</b></div><div>Positions<b>' + usd(cash) + '</b></div><div>Cash<b>$0</b></div><div>Rewards (Oct)<b>$0.00</b></div><div>API tier<b>Basic</b></div></div>' +
+    '<div class="promo"><div><b>Try Advanced Portfolio with Kalshi Pro</b><span>Track performance with more powerful portfolio views</span></div><span>&times;</span></div>' +
+    '<div class="ptabs">' + TABS.map((t) => '<a href="#/portfolio/' + t + '"' + (t === tab ? ' class="selected"' : "") + ">" + t + "</a>").join("") + "</div>" +
+    (list.length ? list.map(posRow).join("") : '<div class="empty"><div class="art"></div>No open ' + tab + "</div>");
+};
+const render = () => {
+  const h = location.hash || "#/";
+  const mm = /^#\/market\/(\w+)(?:\/(away|home))?/.exec(h);
+  const pm = /^#\/portfolio(?:\/(positions|orders|history))?/.exec(h);
+  const g = mm ? GAMES.find((x) => x.id === mm[1]) : null;
+  if (g && order.g !== g.id) { order.g = g.id; order.club = mm[2] || "away"; order.side = "yes"; order.n = 10; }
+  $("#aside").innerHTML = asideHtml();
+  $("#main").innerHTML = pm ? portfolioHtml(pm[1] || "positions") : g ? marketHtml(g) : listHtml();
+  $("#nav-pf").className = "pf" + (pm ? " on" : "");
+  $("#bal").textContent = usd(POS.filter((p) => !p.settled).reduce((s, p) => s + p.n * p.c, 0));
+  for (const b of document.querySelectorAll(".yn button")) b.onclick = () => { order.club = b.dataset.club; order.side = b.dataset.side; render(); };
+  const n = $("#n");
+  if (n) n.oninput = () => { order.n = n.value; const go = $("#place"); const g2 = GAMES.find((x) => x.id === order.g); const y = g2.yes[order.club === "away" ? 0 : 1]; const price = order.side === "yes" ? y : 100 - y; const k = Number(n.value) || 0; const sums = document.querySelectorAll(".sum b"); sums[1].textContent = usd(k * price); sums[2].textContent = usd(k * 100); go.disabled = !(k > 0); };
+  const place = $("#place");
+  if (place) place.onclick = () => {
+    const g2 = GAMES.find((x) => x.id === order.g);
+    const y = g2.yes[order.club === "away" ? 0 : 1];
+    POS.unshift({ g: g2.id, club: order.club, side: order.side, n: Number(order.n) || 1, c: order.side === "yes" ? y : 100 - y, placed: "Oct 25 · " + new Date().toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" }) });
+    save();
+    location.hash = "#/portfolio";
+  };
+};
+window.addEventListener("hashchange", render);
+render();
+</script>
+</body></html>
