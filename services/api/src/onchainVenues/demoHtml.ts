@@ -13,6 +13,12 @@
  * What a reader sees is a position, what it is worth now, and what Lock in pays. How that is
  * arrived at is not on the page.
  *
+ * A tap on Lock in runs a short progress (a spinner and three words, a few seconds) before the
+ * row reads locked. Nothing is priced or placed in that time: it is the wait a real lock has.
+ *
+ * The founder's contact (email and Telegram) is on the page: beside the screen on a desktop,
+ * under it on a phone, with a "Talk to us" link at the top of a phone that jumps to it.
+ *
  * It opens on the phone. Links: ?view=desktop opens on the desktop table (on a wide screen);
  * ?venue=polymarket, sx_bet or limitless opens on that host.
  */
@@ -20,6 +26,19 @@
 import { VENUES, VENUE_SHORT, type Venue } from "./types";
 
 export const DEMO_REFRESH_SEC = 30;
+/** the words the Lock in button shows while a lock runs, in order */
+export const DEMO_LOCK_STAGES = ["Pricing", "Executing", "Confirming"] as const;
+/** how long each word stays, in milliseconds, before a little jitter */
+export const DEMO_STAGE_MS = 800;
+export const DEMO_CONTACT_EMAIL = "michael@atticustrade.com";
+export const DEMO_CONTACT_TELEGRAM = "willialso";
+
+const MAILTO = `mailto:${DEMO_CONTACT_EMAIL}?subject=${encodeURIComponent("Lock in on-chain demo")}`;
+const TELEGRAM = `https://t.me/${DEMO_CONTACT_TELEGRAM}`;
+const contactHtml = (id: string): string =>
+  `<div class="contact"${id ? ` id="${id}"` : ""}><b>Talk to us</b><p>Add Lock in to your venue.</p>` +
+  `<div class="cbtns"><a href="${MAILTO}">Email</a><a class="alt" href="${TELEGRAM}" target="_blank" rel="noopener noreferrer">Telegram</a></div>` +
+  `<small>${DEMO_CONTACT_EMAIL} · @${DEMO_CONTACT_TELEGRAM}</small></div>`;
 
 interface HostLook {
   /** the top bar's tabs, and which one is open */
@@ -100,6 +119,10 @@ button{font:inherit}
 [data-host="sx_bet"] .go{background:linear-gradient(90deg,#182342,#1a2e33) padding-box,linear-gradient(90deg,#418fd5,#35c9a0) border-box;color:#f0f3f9}
 .go.off{background:var(--card2);color:var(--faint);border-color:var(--line);cursor:default;filter:none}
 .go.done{background:var(--upwash);color:var(--up);border-color:var(--up);cursor:default;filter:none}
+.go.busy{cursor:progress;filter:none}
+.spin{width:14px;height:14px;flex:none;border-radius:50%;border:2px solid currentColor;border-right-color:transparent;animation:spin .7s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+@media (prefers-reduced-motion:reduce){.spin{animation-duration:2.4s}}
 .tg{appearance:none;flex:none;width:40px;border:1px solid var(--line);border-radius:var(--r);background:transparent;color:var(--dim);cursor:pointer;display:inline-flex;align-items:center;justify-content:center}
 .tg svg{width:14px;height:14px;transition:transform .15s}
 .pos.open .tg svg{transform:rotate(180deg)}
@@ -116,6 +139,14 @@ button{font:inherit}
 .empty{padding:38px 18px;color:var(--dim);text-align:center;font-size:14px;line-height:1.5}
 .note{padding:10px 16px calc(22px + env(safe-area-inset-bottom));text-align:center;color:var(--faint);font-size:11.5px;line-height:1.55}
 .note span{display:block}
+.ask{display:inline-flex;align-items:center;font-size:12.5px;font-weight:650;color:var(--ink);text-decoration:none;border:1px solid var(--line);border-radius:999px;padding:7px 12px;white-space:nowrap}
+.contact{margin:6px 12px calc(26px + env(safe-area-inset-bottom));padding:16px;border:1px solid var(--line);border-radius:calc(var(--r) + 4px);background:var(--card2);text-align:center}
+.contact b{display:block;font-size:16px;font-weight:700}
+.contact p{margin-top:2px;font-size:13px;color:var(--dim)}
+.cbtns{display:flex;gap:8px;margin-top:12px}
+.cbtns a{flex:1;display:inline-flex;align-items:center;justify-content:center;border-radius:var(--r);padding:10px 12px;font-size:14px;font-weight:700;text-decoration:none;background:var(--ink);color:var(--bg);border:1px solid var(--ink)}
+.cbtns a.alt{background:transparent;color:var(--ink);border-color:var(--line)}
+.contact small{display:block;margin-top:10px;font-size:12px;color:var(--dim);overflow-wrap:anywhere}
 .toast{position:fixed;left:50%;bottom:28px;transform:translate(-50%,8px);background:#0f1115;color:#fff;font-size:12.5px;font-weight:600;padding:8px 14px;border-radius:999px;opacity:0;pointer-events:none;transition:opacity .16s,transform .16s;white-space:nowrap;z-index:5}
 .toast.on{opacity:.96;transform:translate(-50%,0)}
 
@@ -130,6 +161,12 @@ button{font:inherit}
   .pitch .try{margin-top:22px;font-size:14.5px;font-weight:650}
   .pitch .try b{color:#00915f}
   .pitch .small{margin-top:22px;font-size:12px;line-height:1.55;color:var(--stage-dim)}
+  .ask,.demo>.contact{display:none}
+  .pitch .contact{margin:26px 0 0;padding:18px 0 0;border:0;border-top:1px solid #dfe2e8;border-radius:0;background:transparent;text-align:left}
+  .pitch .contact p{color:var(--stage-dim)}
+  .pitch .cbtns a{border-radius:9px;background:var(--stage-ink);color:#fff;border-color:var(--stage-ink)}
+  .pitch .cbtns a.alt{background:#fff;color:var(--stage-ink);border-color:#dfe2e8}
+  .pitch .contact small{color:var(--stage-dim)}
   .ctl{padding:0 0 14px}
   .ctl .seg{background:#fff;border-color:#dfe2e8}
   .ctl .seg button{color:var(--stage-dim)}
@@ -167,11 +204,13 @@ button{font:inherit}
   <p class="lede">Lock in sits on every open position, on your own page. One tap fixes what the position pays, win or lose, and your trader never leaves.</p>
   <p class="try">Tap <b>Lock in</b> on any row. Switch the venue or the view above the screen.</p>
   <p class="small">Demonstration. Positions are simulated at live prices and nothing is bought. Atticus's fee is not included. Not affiliated with or endorsed by any venue.</p>
+  ${contactHtml("")}
 </aside>
 <main class="demo">
   <div class="ctl">
     <div class="seg viewseg" role="group" aria-label="View"><button type="button" data-view="mobile" aria-pressed="false">Mobile</button><button type="button" data-view="desktop" aria-pressed="false">Desktop</button></div>
     <div class="seg homeseg" role="group" aria-label="Venue" id="homeseg"></div>
+    <a class="ask" href="#contact">Talk to us</a>
   </div>
   <div class="shell" id="shell" data-view="mobile" data-host="polymarket">
     <div class="scroll">
@@ -182,6 +221,7 @@ button{font:inherit}
       <div class="note"><span>Demonstration. Simulated positions at live prices; nothing is bought.</span><span>Atticus's fee is not included. Not affiliated with or endorsed by any venue.</span><span class="pow">Powered by <b>Atticus</b></span></div>
     </div>
   </div>
+  ${contactHtml("contact")}
 </main>
 </div>
 <div class="toast" id="toast"></div>
@@ -189,7 +229,8 @@ button{font:inherit}
 (function(){
   var HOSTS=${hosts};
   var API=location.pathname.replace(/\\/+$/,'')+'/api/positions';
-  var S={data:null,home:null,asked:false,view:'mobile',open:null,locked:{},failed:false};
+  var STAGES=${JSON.stringify(DEMO_LOCK_STAGES)};
+  var S={data:null,home:null,asked:false,view:'mobile',open:null,locked:{},busy:{},failed:false};
   var $=function(id){return document.getElementById(id)};
   var esc=function(s){return String(s).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})};
   var usd=function(c){var n=Math.abs(c),d=Math.floor(n/100),r=String(n%100);if(r.length<2)r='0'+r;return (c<0?'-':'')+'$'+String(d).replace(/\\B(?=(\\d{3})+(?!\\d))/g,',')+'.'+r};
@@ -201,8 +242,9 @@ button{font:inherit}
   function rowsOf(v){
     var out=[],seen={},hs=S.data?S.data.homes:[];
     for(var i=0;i<hs.length;i++)if(hs[i].venue===v)for(var j=0;j<hs[i].positions.length;j++){var p=hs[i].positions[j];seen[p.id]=1;out.push(p)}
-    /* a locked position stays on the list after its game leaves the feed */
-    for(var id in S.locked)if(!seen[id]&&id.indexOf(v+':')===0)out.push(S.locked[id]);
+    /* a locked position, or one a lock is running on, stays on the list after its game leaves the feed */
+    for(var id in S.locked)if(!seen[id]&&id.indexOf(v+':')===0){seen[id]=1;out.push(S.locked[id])}
+    for(var bid in S.busy)if(!seen[bid]&&bid.indexOf(v+':')===0)out.push(S.busy[bid].p);
     return out;
   }
   function when(iso){
@@ -215,7 +257,8 @@ button{font:inherit}
     return p.entryCents+'\\u00a2 \\u2192 '+Math.round(p.nowCents)+'\\u00a2';
   }
   function action(p){
-    var lk=S.locked[p.id];
+    var lk=S.locked[p.id],bz=S.busy[p.id];
+    if(bz)return '<div class="btns"><button type="button" class="go busy" disabled aria-busy="true"><i class="spin"></i>'+STAGES[bz.i]+'\u2026</button></div><div class="sub"><span>Lock in '+usd(bz.p.lockCents)+'</span></div>';
     if(lk)return '<div class="btns"><button type="button" class="go done" disabled>'+CHECK+'Locked '+usd(lk.lockCents)+'</button></div><div class="sub"><span>Paid when the game settles</span><a data-act="undo">Undo</a></div>';
     if(p.lockCents===null)return '<div class="btns"><button type="button" class="go off" disabled>'+SHIELD+'Lock in</button></div><div class="sub"><span>Not available right now</span></div>';
     return '<div class="btns"><button type="button" class="go" data-act="lock">'+SHIELD+'Lock in '+usd(p.lockCents)+'</button><button type="button" class="tg" data-act="details" aria-label="Details" aria-expanded="'+(S.open===p.id)+'">'+CHEV+'</button></div><div class="sub"><span class="more">'+usd(p.moreCents)+' more than closing now</span></div>';
@@ -244,7 +287,7 @@ button{font:inherit}
     if(!rows.length){$('total').innerHTML='';$('list').innerHTML='<div class="empty">No open positions on '+esc(h.name)+' right now.</div>';return}
     var html='',total=0;
     for(var k=0;k<rows.length;k++){
-      var p=rows[k],pl=p.valueCents-p.stakeCents,open=S.open===p.id&&!S.locked[p.id]&&p.lockCents!==null;
+      var p=rows[k],pl=p.valueCents-p.stakeCents,open=S.open===p.id&&!S.locked[p.id]&&!S.busy[p.id]&&p.lockCents!==null;
       total+=p.valueCents;
       html+='<div class="pos'+(open?' open':'')+'" data-id="'+esc(p.id)+'"><div class="row">'+
         '<div class="c name"><b>'+esc(p.pick)+'</b><span class="meta">'+esc(p.game)+' · '+esc(p.competition)+' · '+when(p.startsAt)+'</span></div>'+
@@ -261,6 +304,19 @@ button{font:inherit}
   var toastT=null;
   function toast(text){var t=$('toast');t.textContent=text;t.className='toast on';clearTimeout(toastT);toastT=setTimeout(function(){t.className='toast'},2400)}
 
+  /* the lock, in stages the button reports in words; the amount is the one that was on the button when it was tapped */
+  function startLock(id,p){
+    var b={i:0,p:JSON.parse(JSON.stringify(p))};
+    S.busy[id]=b;if(S.open===id)S.open=null;
+    var t=setInterval(function(){
+      b.i++;
+      if(b.i<STAGES.length){render();return}
+      clearInterval(t);delete S.busy[id];S.locked[id]=b.p;
+      toast('Locked in '+usd(b.p.lockCents)+'. Demonstration: nothing was bought.');
+      render();
+    },${DEMO_STAGE_MS}+Math.floor(Math.random()*250));
+  }
+
   $('list').addEventListener('click',function(e){
     var el=e.target;while(el&&el!==this&&!(el.getAttribute&&el.getAttribute('data-act')))el=el.parentNode;
     if(!el||el===this)return;
@@ -268,7 +324,7 @@ button{font:inherit}
     if(!row)return;
     var id=row.getAttribute('data-id'),p=find(id),act=el.getAttribute('data-act');
     if(!p)return;
-    if(act==='lock'&&p.lockCents!==null){S.locked[id]=JSON.parse(JSON.stringify(p));S.open=null;toast('Locked in '+usd(p.lockCents)+'. Demonstration: nothing was bought.')}
+    if(act==='lock'&&p.lockCents!==null&&!S.busy[id]&&!S.locked[id]){startLock(id,p)}
     else if(act==='undo'){delete S.locked[id]}
     else if(act==='details'){S.open=S.open===id?null:id}
     render();
